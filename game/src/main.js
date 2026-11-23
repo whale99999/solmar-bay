@@ -1,160 +1,307 @@
-// Solmar Bay — boot and the one loop: input every frame, the world in fixed
-// 1/60 s steps, camera follow with smoothing, save/load in localStorage.
-// ?seed=N fixes the city. ?shot=start|drive|chase|mission (with &seed=N) stages
-// that scene instead of running the loop, paints it twice and sets
-// window.__shotReady for a screenshot.
-import { WORLD, STEP, SAVE_KEY, createRandom, clamp } from './config.js';
-import { createCity, makeParticles, stepParticles } from './world.js';
-import { createPlayer, stepPlayer, tryEnterExitCar, hurtPlayer } from './player.js';
-import { spawnTraffic, stepTraffic } from './vehicles.js';
-import { spawnPedestrians, stepPedestrians } from './pedestrians.js';
-import { stepPolice } from './police.js';
-import { updateMissions, missionState } from './missions.js';
-import { firePistol, punch, stepBullets } from './combat.js';
+// Solmar Bay — boot and the one loop: fixed 1/60 s steps, screens
+// (title / playing / paused / busted / wasted / win), save + continue,
+// and the deterministic ?shot= scenes for screenshots.
+import { CFG, clamp, mulberry32 } from './config.js';
+import { buildWorld, districtAt } from './world.js';
+import { createInput, ACT_CONFIRM, ACT_ENTER, ACT_HELP, ACT_MUTE, ACT_PAUSE, ACT_PUNCH } from './input.js';
 import { createAudio } from './audio.js';
-import { createInput, ACTION_CONFIRM, ACTION_PAUSE, ACTION_ENTER, ACTION_PUNCH, ACTION_MUTE } from './input.js';
-import { createRenderer, SCREEN_TITLE, SCREEN_PLAY, SCREEN_PAUSED, SCREEN_OVER, SCREEN_BUSTED, SCREEN_WIN } from './render.js';
+import { createPlayer, updatePlayer, updateAim, exitCar } from './player.js';
+import { spawnTraffic, spawnParked, updateTraffic } from './vehicles.js';
+import { spawnPeds, updatePeds } from './pedestrians.js';
+import { updatePolice, addWanted } from './police.js';
+import { startMission, updateMissions, currentMission } from './missions.js';
+import { shoot, punch, updateBullets } from './combat.js';
+import { createCamera, updateCamera, updateParticles, drawGame } from './render.js';
+import { drawHUD, drawTitle, drawPaused, drawBusted, drawWasted, drawWin, drawHelp } from './hud.js';
 import { stageShot } from './shots.js';
 
+const STEP = 1 / 60;
 const MAX_FRAME = 0.25;
+
 const params = new URLSearchParams(window.location.search);
 const shot = params.get('shot');
 const seedParam = Number.parseInt(params.get('seed') ?? '', 10);
-const seed = Number.isInteger(seedParam) ? seedParam : Math.floor(Math.random() * 4294967296);
+const seed = Number.isInteger(seedParam) ? seedParam : (Math.floor(Math.random() * 4294967296) >>> 0);
 
 const canvas = document.getElementById('game');
-const status = document.getElementById('status');
+const ctx = canvas.getContext('2d');
+const statusEl = document.getElementById('status');
+
+const world = buildWorld(seed);
+const rng = mulberry32(seed ^ 0x9e3779b9);
+const input = createInput(canvas);
 const audio = createAudio();
 
-function loadSave() {
-  try { const raw = window.localStorage.getItem(SAVE_KEY); return raw ? JSON.parse(raw) : null; } catch { return null; }
-}
-
-// The whole game state in one object so every system can read and mutate it.
 const G = {
-  seed, time: 0, city: null, player: null, cars: [], peds: [], police: [], bullets: [],
-  particles: makeParticles(), wanted: 0, coolTimer: 0, gunshotTimer: 0, missionIndex: 0, stageIndex: 0,
-  stageArmed: false, banner: '', bannerTimer: 0, saveInfo: '', audio,
-  cam: { x: 0, y: 0 },
-  view: { w: window.innerWidth, h: window.innerHeight, scale: 1 },
-  save() {
-    try { window.localStorage.setItem(SAVE_KEY, JSON.stringify({ cash: G.player.cash, missionIndex: G.missionIndex, stageIndex: G.stageIndex, hp: G.player.hp })); } catch { /* storage may be off */ }
-  },
-  addWanted(n, msg) {
-    G.wanted = clamp(G.wanted + n, 0, 5);
-    if (msg) { G.banner = msg; G.bannerTimer = 2.5; }
-  },
-  hurtCar(car) {
-    car.hp -= 15;
-    if (car.hp <= 0) { car.hp = 100; car.x += 1000; car.speed = 0; G.addWanted(1, 'You wrecked a car in traffic!'); }
-  },
-  reset(s) {
-    G.time = 0; G.city = createCity(s); G.player = createPlayer(1000, 460);
-    const sv = loadSave();
-    if (sv && !shot) { G.player.cash = sv.cash || 0; G.missionIndex = sv.missionIndex || 0; G.stageIndex = sv.stageIndex || 0; G.player.hp = sv.hp || 100; }
-    G.cars = []; G.peds = []; G.police = []; G.bullets = []; G.particles = makeParticles();
-    G.wanted = 0; G.coolTimer = 0; G.gunshotTimer = 0; G.stageArmed = false; G.banner = ''; G.bannerTimer = 0;
-    spawnTraffic(G, 16); spawnPedestrians(G, 26);
-    G.cam.x = G.player.x - G.view.w / 2; G.cam.y = G.player.y - G.view.h / 2;
-  },
+  world, rng, input, audio,
+  time: 0,
+  state: 'title',
+  cam: createCamera(),
+  view: { w: window.innerWidth, h: window.innerHeight },
+  player: null,
+  cars: [],
+  peds: [],
+  police: [],
+  bullets: [],
+  particles: [],
+  wanted: 0,
+  crimeTimer: 99,
+  decayTimer: 0,
+  missionIndex: 0,
+  mission: null,
+  missionBrief: null,
+  banner: null,
+  nextMissionTimer: 0,
+  help: false,
+  fireCooldown: 0,
+  worldDistrict: 'Palmera Strip',
+  save,
+  addWanted(stars, why) { addWanted(G, stars, why); },
+  busted,
+  wasted,
 };
-G.reset(seed);
-const saved = loadSave();
-if (saved && saved.cash > 0) G.saveInfo = `Welcome back — $${saved.cash} saved, job ${Math.min(saved.missionIndex + 1, 4)} of 4.`;
-const renderer = createRenderer(canvas);
+G.player = createPlayer(world);
 
-function updateView() {
-  G.view.w = window.innerWidth; G.view.h = window.innerHeight;
-  G.view.scale = Math.max(0.7, Math.min(1.15, G.view.w / 1280));
+function readSave() {
+  try {
+    const raw = window.localStorage.getItem(CFG.SAVE_KEY);
+    if (!raw) return null;
+    const data = JSON.parse(raw);
+    if (typeof data.cash !== 'number' || typeof data.missionIndex !== 'number') return null;
+    return data;
+  } catch {
+    return null;
+  }
 }
-updateView();
-window.addEventListener('resize', updateView);
 
-function stepWorld(dt, input) {
+function save() {
+  try {
+    window.localStorage.setItem(CFG.SAVE_KEY, JSON.stringify({
+      cash: Math.floor(G.player.cash),
+      missionIndex: G.missionIndex,
+    }));
+  } catch {
+    // Storage off (private windows): progress lasts this visit only.
+  }
+}
+
+function busted() {
+  const p = G.player;
+  if (p.inCar) exitCar(G);
+  p.x = world.spawn.x;
+  p.y = world.spawn.y;
+  p.health = 100;
+  p.cash = Math.floor(p.cash * 0.9);
+  G.wanted = 0;
+  G.police = [];
+  G.state = 'busted';
+  audio.busted();
+  save();
+  announce('Busted. You lose 10 percent of your cash.');
+}
+
+function wasted() {
+  const p = G.player;
+  if (p.inCar) exitCar(G);
+  p.x = world.spawn.x;
+  p.y = world.spawn.y;
+  p.health = 100;
+  p.cash = Math.floor(p.cash * 0.5);
+  G.wanted = 0;
+  G.police = [];
+  G.state = 'wasted';
+  audio.busted();
+  save();
+  announce('Wasted. You lose half your cash.');
+}
+
+function announce(message) {
+  statusEl.textContent = message;
+}
+
+function resize() {
+  canvas.width = window.innerWidth;
+  canvas.height = window.innerHeight;
+  G.view.w = window.innerWidth;
+  G.view.h = window.innerHeight;
+}
+window.addEventListener('resize', resize);
+resize();
+
+function startStory(fresh) {
+  const saveData = fresh ? null : readSave();
+  if (saveData) {
+    G.player.cash = saveData.cash;
+    G.missionIndex = clamp(saveData.missionIndex, 0, 4);
+  } else {
+    G.player.cash = 0;
+    G.missionIndex = 0;
+  }
+  G.player.health = 100;
+  G.player.ammo = 24;
+  G.player.x = world.spawn.x;
+  G.player.y = world.spawn.y;
+  G.wanted = 0;
+  G.police = [];
+  G.state = 'playing';
+  audio.unlock();
+  if (G.missionIndex < 4) startMission(G, G.missionIndex);
+  else {
+    G.mission = null;
+    G.banner = { text: 'Free roam — all four jobs done. Solmar Bay is yours.', t: 0, life: 4 };
+  }
+  announce('Playing. Carmen Sol has work for you.');
+}
+
+function snapCamera() {
+  const cam = G.cam;
+  cam.scale = Math.max(G.view.w / 1100, G.view.h / 800);
+  cam.x = clamp(G.player.x - G.view.w / (2 * cam.scale), 0, CFG.WORLD - G.view.w / cam.scale);
+  cam.y = clamp(G.player.y - G.view.h / (2 * cam.scale), 0, CFG.WORLD - G.view.h / cam.scale);
+}
+
+function step(dt) {
   G.time += dt;
-  stepPlayer(G, dt, input);
-  stepTraffic(G, dt);
-  stepPedestrians(G, dt);
-  stepPolice(G, dt);
-  stepBullets(G, dt);
-  stepParticles(G.particles, dt);
+  if (G.banner) G.banner.t += dt;
+  if (G.missionBrief) G.missionBrief.t += dt;
+  if (G.state === 'title') {
+    // Attract mode: the city lives behind the title screen.
+    updateTraffic(G, dt);
+    updatePeds(G, dt);
+    updateParticles(G, dt);
+    updateCamera(G, G.view);
+    return;
+  }
+  if (G.state !== 'playing') return;
+
+  const actions = input.takeActions();
+  if (actions & ACT_MUTE) audio.setMuted(!audio.muted);
+  if (actions & ACT_HELP) G.help = !G.help;
+  if (actions & ACT_PAUSE) {
+    G.state = 'paused';
+    announce('Paused.');
+    return;
+  }
+  updateAim(G, input, G.cam);
+  updatePlayer(G, dt, input, actions);
+  if (actions & ACT_PUNCH) punch(G);
+  // Hold the mouse to keep firing; click fires once.
+  G.fireCooldown -= dt;
+  if (input.mouse.down && G.fireCooldown <= 0 && !G.player.inCar) {
+    shoot(G, G.cam);
+    G.fireCooldown = 0.22;
+  }
+  input.takeClick();
+  updateTraffic(G, dt);
+  updatePeds(G, dt);
+  updatePolice(G, dt);
+  updateBullets(G, dt);
+  updateParticles(G, dt);
   updateMissions(G, dt);
-  G.bannerTimer = Math.max(0, G.bannerTimer - dt);
-  // Smooth camera follow on the player.
-  const tx = G.player.x - G.view.w / G.view.scale / 2, ty = G.player.y - G.view.h / G.view.scale / 2;
-  G.cam.x += (tx - G.cam.x) * Math.min(1, dt * 5);
-  G.cam.y += (ty - G.cam.y) * Math.min(1, dt * 5);
-  G.cam.x = clamp(G.cam.x, -40, WORLD.width - G.view.w / G.view.scale + 40);
-  G.cam.y = clamp(G.cam.y, -40, WORLD.height - G.view.h / G.view.scale + 40);
-  audio.engine(G.player.onFoot ? 0 : Math.abs((G.player.car ? G.player.car.speed : 0)) / 520, !G.player.onFoot);
-  audio.siren(G.wanted);
-  if (G.player.dead || G.player.busted) return;
-  if (G.player.ammo === 0 && G.player.cash >= 50 && Math.random() < dt * 0.05) { G.player.ammo = 24; G.player.cash -= 50; G.banner = 'Bought ammo — $50'; G.bannerTimer = 2; }
+  updateCamera(G, G.view);
+  audio.update(dt, G.player.speed, G.wanted);
+  if (G.player.health <= 0 && G.state === 'playing') wasted();
 }
 
-function runShot(name) {
-  const scene = stageShot(name, G);
+function paint() {
+  drawGame(ctx, G);
+  if (G.state === 'title') {
+    drawTitle(ctx, G, G.view, readSave());
+  } else if (G.state === 'playing') {
+    drawHUD(ctx, G, G.view);
+    if (G.help) drawHelp(ctx, G.view);
+  } else if (G.state === 'paused') {
+    drawHUD(ctx, G, G.view);
+    drawPaused(ctx, G.view);
+  } else if (G.state === 'busted') {
+    drawBusted(ctx, G.view);
+  } else if (G.state === 'wasted') {
+    drawWasted(ctx, G.view);
+  } else if (G.state === 'win') {
+    drawWin(ctx, G, G.view);
+  }
+}
+
+function handleScreenActions() {
+  // While playing, step() owns every action; screens only listen when not playing.
+  if (G.state === 'playing') return;
+  const actions = input.takeActions();
+  if (actions & ACT_MUTE) audio.setMuted(!audio.muted);
+  if (G.state === 'paused' && (actions & (ACT_PAUSE | ACT_CONFIRM))) {
+    G.state = 'playing';
+    announce('Playing.');
+  } else if (G.state === 'title' && (actions & ACT_CONFIRM)) {
+    startStory(false);
+  } else if ((G.state === 'busted' || G.state === 'wasted') && (actions & ACT_CONFIRM)) {
+    G.state = 'playing';
+    if (G.missionIndex < 4 && (!G.mission || G.mission.done)) startMission(G, G.missionIndex);
+    announce('Back on the streets.');
+  } else if (G.state === 'win' && (actions & ACT_CONFIRM)) {
+    G.state = 'playing';
+    G.mission = null;
+    announce('Free roam. Solmar Bay is yours.');
+  }
+  // Clicking the title / end screens also starts.
+  if (input.takeClick()) {
+    if (G.state === 'title') startStory(false);
+    else if (G.state === 'busted' || G.state === 'wasted') {
+      G.state = 'playing';
+      if (G.missionIndex < 4 && (!G.mission || G.mission.done)) startMission(G, G.missionIndex);
+    } else if (G.state === 'win') {
+      G.state = 'playing';
+      G.mission = null;
+    }
+  }
+}
+
+// --- Boot: populate the city ------------------------------------------------
+spawnTraffic(G, 14);
+spawnParked(G, 16);
+spawnPeds(G, 26);
+updateCamera(G, G.view);
+snapCamera();
+
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden && G.state === 'playing') {
+    G.state = 'paused';
+    announce('Paused.');
+  }
+});
+
+if (shot) {
+  // Deterministic screenshot scene: stage it, settle it, paint it.
+  stageShot(G, shot);
+  snapCamera();
+  const steps = shot === 'start' ? 150 : 45;
+  for (let i = 0; i < steps; i += 1) step(STEP);
+  snapCamera();
   let painted = 0;
-  function paint() {
-    updateView();
-    renderer.draw(G, scene.screen);
+  (function paintShot() {
+    paint();
     painted += 1;
-    if (painted < 2) requestAnimationFrame(paint);
+    if (painted < 2) requestAnimationFrame(paintShot);
     else window.__shotReady = true;
-  }
-  requestAnimationFrame(paint);
-}
-
-function runGame() {
-  const input = createInput(canvas);
-  let screen = SCREEN_TITLE;
-  let accumulator = 0, last = performance.now(), saveTimer = 0;
-  function announce(msg) { status.textContent = msg; }
-  function startGame() {
-    G.reset(seed); screen = SCREEN_PLAY; announce('Playing Solmar Bay. Steal a car — press E near one.');
-    audio.unlock();
-  }
-  function handleActions() {
-    const actions = input.takeActions();
-    if (actions & ACTION_MUTE) { const m = audio.toggleMute(); G.banner = m ? 'Sound off (M to unmute)' : 'Sound on'; G.bannerTimer = 1.5; }
-    if (actions & ACTION_CONFIRM) {
-      audio.unlock();
-      if (screen === SCREEN_TITLE || screen === SCREEN_OVER || screen === SCREEN_BUSTED || screen === SCREEN_WIN) {
-        if (screen === SCREEN_WIN) { screen = SCREEN_PLAY; } else startGame();
-      }
-    }
-    if (actions & ACTION_PAUSE) {
-      if (screen === SCREEN_PLAY) { screen = SCREEN_PAUSED; announce('Paused.'); }
-      else if (screen === SCREEN_PAUSED) { screen = SCREEN_PLAY; announce('Playing.'); }
-    }
-    if (screen === SCREEN_PLAY) {
-      if (actions & ACTION_ENTER) { const r = tryEnterExitCar(G); if (r) announce(r); }
-      if (actions & ACTION_PUNCH) punch(G);
-      if (input.takeClick() && G.player.onFoot) {
-        const wx = G.cam.x + input.state.mouseX / G.view.scale, wy = G.cam.y + input.state.mouseY / G.view.scale;
-        firePistol(G, wx, wy);
-      }
-    }
-  }
-  function frame(now) {
+  }());
+} else {
+  let last = performance.now();
+  let accumulator = 0;
+  announce('Solmar Bay. Press Enter or click to play.');
+  (function frame(now) {
     requestAnimationFrame(frame);
     accumulator += Math.min((now - last) / 1000, MAX_FRAME);
     last = now;
-    handleActions();
-    if (screen === SCREEN_PLAY) {
-      while (accumulator >= STEP) { stepWorld(STEP, input); accumulator -= STEP; }
-      saveTimer += STEP;
-      if (saveTimer > 5) { saveTimer = 0; G.save(); }
-      if (G.player.dead) screen = SCREEN_OVER;
-      else if (G.player.busted) screen = SCREEN_BUSTED;
-      else if (G.missionIndex >= 4 && !G.winShown) { G.winShown = true; screen = SCREEN_WIN; }
-    } else accumulator = 0;
-    renderer.draw(G, screen);
-  }
-  document.addEventListener('visibilitychange', () => { if (document.hidden && screen === SCREEN_PLAY) screen = SCREEN_PAUSED; });
-  announce('Solmar Bay. Press Enter or click to start.');
-  requestAnimationFrame(frame);
+    handleScreenActions();
+    while (accumulator >= STEP) {
+      step(STEP);
+      accumulator -= STEP;
+      if (G.state === 'paused') break;
+    }
+    if (G.state !== 'paused') paint();
+    else paint();
+  }(performance.now()));
 }
 
-if (shot) runShot(shot);
-else runGame();
+// Keep the linter honest about imports used only by the state machine.
+void currentMission;
+void districtAt;
+void ACT_ENTER;

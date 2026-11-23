@@ -1,39 +1,66 @@
-// Solmar Bay — keyboard + mouse input. WASD/arrows move and drive, E enters/exits
-// a car, F punches, mouse aims, click shoots, P/Esc pauses, M mutes, Enter confirms.
-export const ACTION_CONFIRM = 1, ACTION_PAUSE = 2, ACTION_ENTER = 4, ACTION_PUNCH = 8, ACTION_MUTE = 16;
+// Solmar Bay — keyboard + mouse input. Held keys are read every frame;
+// one-shot presses (interact, punch, pause, mute, help, confirm) queue as flags.
+export const ACT_ENTER = 1;
+export const ACT_PUNCH = 2;
+export const ACT_PAUSE = 4;
+export const ACT_MUTE = 8;
+export const ACT_HELP = 16;
+export const ACT_CONFIRM = 32;
 
 export function createInput(canvas) {
   const keys = new Set();
-  const state = { mouseX: 0, mouseY: 0, mouseDown: false, clicked: false, actions: 0 };
-  function key(e) { return e.key.length === 1 ? e.key.toLowerCase() : e.key; }
-  window.addEventListener('keydown', (e) => {
-    const k = key(e);
-    if ([' ', 'arrowup', 'arrowdown', 'arrowleft', 'arrowright'].includes(k)) e.preventDefault();
-    if (!e.repeat) {
-      if (k === ' ' || k === 'enter') state.actions |= ACTION_CONFIRM;
-      if (k === 'p' || k === 'escape') state.actions |= ACTION_PAUSE;
-      if (k === 'e') state.actions |= ACTION_ENTER;
-      if (k === 'f') state.actions |= ACTION_PUNCH;
-      if (k === 'm') state.actions |= ACTION_MUTE;
+  let actions = 0;
+  const mouse = { x: 0, y: 0, down: false, clicked: false };
+
+  window.addEventListener('keydown', (event) => {
+    if (event.repeat) return;
+    keys.add(event.code);
+    if (event.code === 'KeyE') actions |= ACT_ENTER;
+    else if (event.code === 'KeyF') actions |= ACT_PUNCH;
+    else if (event.code === 'KeyP' || event.code === 'Escape') actions |= ACT_PAUSE;
+    else if (event.code === 'KeyM') actions |= ACT_MUTE;
+    else if (event.code === 'KeyH') actions |= ACT_HELP;
+    else if (event.code === 'Enter' || event.code === 'Space') actions |= ACT_CONFIRM;
+    if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Space'].includes(event.code)) {
+      event.preventDefault();
     }
-    keys.add(k);
   });
-  window.addEventListener('keyup', (e) => keys.delete(key(e)));
-  canvas.addEventListener('mousemove', (e) => { const r = canvas.getBoundingClientRect(); state.mouseX = e.clientX - r.left; state.mouseY = e.clientY - r.top; });
-  canvas.addEventListener('mousedown', (e) => { if (e.button === 0) { state.mouseDown = true; state.clicked = true; } });
-  window.addEventListener('mouseup', () => { state.mouseDown = false; });
+  window.addEventListener('keyup', (event) => keys.delete(event.code));
+  window.addEventListener('blur', () => keys.clear());
+
+  function trackPointer(event) {
+    const rect = canvas.getBoundingClientRect();
+    mouse.x = event.clientX - rect.left;
+    mouse.y = event.clientY - rect.top;
+  }
+  canvas.addEventListener('pointermove', trackPointer);
+  canvas.addEventListener('pointerdown', (event) => {
+    trackPointer(event);
+    mouse.down = true;
+    mouse.clicked = true;
+  });
+  window.addEventListener('pointerup', () => { mouse.down = false; });
+
   return {
-    state,
-    takeActions() { const a = state.actions; state.actions = 0; return a; },
-    takeClick() { const c = state.clicked; state.clicked = false; return c; },
+    keys,
+    mouse,
+    down(code) { return keys.has(code); },
     axis() {
-      let x = 0, y = 0;
-      if (keys.has('a') || keys.has('arrowleft')) x -= 1;
-      if (keys.has('d') || keys.has('arrowright')) x += 1;
-      if (keys.has('w') || keys.has('arrowup')) y -= 1;
-      if (keys.has('s') || keys.has('arrowdown')) y += 1;
+      const x = (keys.has('KeyD') || keys.has('ArrowRight') ? 1 : 0)
+        - (keys.has('KeyA') || keys.has('ArrowLeft') ? 1 : 0);
+      const y = (keys.has('KeyS') || keys.has('ArrowDown') ? 1 : 0)
+        - (keys.has('KeyW') || keys.has('ArrowUp') ? 1 : 0);
       return { x, y };
     },
-    isDown(k) { return keys.has(k); },
+    takeActions() {
+      const taken = actions;
+      actions = 0;
+      return taken;
+    },
+    takeClick() {
+      const c = mouse.clicked;
+      mouse.clicked = false;
+      return c;
+    },
   };
 }

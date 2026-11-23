@@ -1,80 +1,238 @@
-// Solmar Bay — the HUD: health bar, cash, wanted stars, mission objective, ammo,
-// district name, banners, and a live minimap (top right) with player, police,
-// traffic and the mission marker.
-import { WORLD, PALETTE, FONT, ROADS_X, ROADS_Y, districtAt } from './config.js';
-import { missionState } from './missions.js';
+// Solmar Bay — HUD: health, cash, wanted stars, objective, banner and the
+// live minimap; plus the title, pause, busted, wasted, win and help screens.
+import { CFG, clamp } from './config.js';
+import { currentMission } from './missions.js';
+
+const FONT = 'system-ui, -apple-system, "Segoe UI", sans-serif';
+
+function text(ctx, value, x, y, size, color, align, bold) {
+  ctx.font = `${bold ? 'bold ' : ''}${size}px ${FONT}`;
+  ctx.fillStyle = color;
+  ctx.textAlign = align || 'left';
+  ctx.textBaseline = 'alphabetic';
+  ctx.fillText(value, x, y);
+}
+
+function panel(ctx, x, y, w, h, color) {
+  ctx.fillStyle = color || 'rgba(12,14,20,0.72)';
+  ctx.beginPath();
+  ctx.roundRect(x, y, w, h, 10);
+  ctx.fill();
+}
 
 export function drawHUD(ctx, G, view) {
-  const p = G.player, w = view.w, h = view.h;
-  const ms = missionState(G);
-  ctx.save();
-  ctx.font = `600 15px ${FONT}`; ctx.textBaseline = 'top';
-  // Top-left status panel.
-  ctx.fillStyle = PALETTE.panel; roundRect(ctx, 12, 12, 250, 108, 10); ctx.fill();
-  ctx.fillStyle = PALETTE.text; ctx.fillText('MILO VEGA', 24, 20);
-  ctx.fillStyle = '#3a4152'; roundRect(ctx, 24, 44, 150, 12, 6); ctx.fill();
-  ctx.fillStyle = p.hp > 30 ? '#57d977' : '#ff4d4d'; roundRect(ctx, 24, 44, 150 * Math.max(0, p.hp) / 100, 12, 6); ctx.fill();
-  ctx.fillStyle = PALETTE.text; ctx.fillText(`$${p.cash}`, 184, 42);
-  // Wanted stars.
-  for (let i = 0; i < 5; i += 1) {
-    ctx.fillStyle = i < G.wanted ? '#ffd23f' : 'rgba(255,255,255,0.22)';
-    star(ctx, 30 + i * 26, 78, i < G.wanted ? 11 : 9);
-  }
-  ctx.fillStyle = PALETTE.muted; ctx.font = `12px ${FONT}`;
-  ctx.fillText(p.onFoot ? `On foot · ammo ${p.ammo}` : 'Driving · E to exit', 24, 100);
-  // Mission objective, top centre.
-  ctx.font = `600 15px ${FONT}`;
-  const obj = ms.done ? '★ All jobs done — free roam' : `${ms.title}: ${ms.text}`;
-  const ow = ctx.measureText(obj).width + 28;
-  ctx.fillStyle = PALETTE.panel; roundRect(ctx, (w - ow) / 2, 12, ow, 34, 10); ctx.fill();
-  ctx.fillStyle = '#ffd23f'; ctx.fillText(obj, (w - ow) / 2 + 14, 20);
-  // District label + controls hint, bottom left.
-  ctx.font = `13px ${FONT}`; ctx.fillStyle = PALETTE.muted;
-  ctx.fillText(`${districtAt(p.x, p.y).name} · Solmar Bay`, 14, h - 44);
-  ctx.fillText('WASD move/drive · E enter car · Click shoot · F punch · P pause · M mute', 14, h - 24);
-  // Banner.
-  if (G.bannerTimer > 0 && G.banner) {
-    ctx.font = `700 20px ${FONT}`;
-    const bw = ctx.measureText(G.banner).width + 32;
-    ctx.fillStyle = 'rgba(12,16,28,0.88)'; roundRect(ctx, (w - bw) / 2, 58, bw, 38, 10); ctx.fill();
-    ctx.fillStyle = '#ffd23f'; ctx.fillText(G.banner, (w - bw) / 2 + 16, 68);
-  }
-  drawMinimap(ctx, G, w, h);
-  ctx.restore();
-}
-
-function drawMinimap(ctx, G, w, h) {
-  const mw = 190, mh = 142, mx = w - mw - 12, my = 12;
-  const sx = mw / WORLD.width, sy = mh / WORLD.height;
-  ctx.save();
-  ctx.fillStyle = 'rgba(12,16,28,0.85)'; roundRect(ctx, mx - 4, my - 4, mw + 8, mh + 8, 8); ctx.fill();
-  ctx.fillStyle = '#22405c'; ctx.fillRect(mx, my, mw, mh);
-  ctx.fillStyle = '#33363f';
-  for (const rx of ROADS_X) ctx.fillRect(mx + rx * sx - 2, my, 4, mh);
-  for (const ry of ROADS_Y) ctx.fillRect(mx, my + ry * sy, mw, 4);
-  const ms = missionState(G);
-  if (!ms.done) { ctx.fillStyle = '#ffd23f'; ctx.beginPath(); ctx.arc(mx + ms.x * sx, my + ms.y * sy, 5, 0, Math.PI * 2); ctx.fill(); }
-  ctx.fillStyle = '#9fb4c8';
-  for (const c of G.cars) ctx.fillRect(mx + c.x * sx - 1, my + c.y * sy - 1, 3, 3);
-  ctx.fillStyle = '#ff4d4d';
-  for (const cop of G.police) { ctx.beginPath(); ctx.arc(mx + cop.x * sx, my + cop.y * sy, 3, 0, Math.PI * 2); ctx.fill(); }
   const p = G.player;
-  ctx.fillStyle = '#ffd23f'; ctx.beginPath(); ctx.arc(mx + p.x * sx, my + p.y * sy, 4, 0, Math.PI * 2); ctx.fill();
-  ctx.strokeStyle = '#fff'; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.arc(mx + p.x * sx, my + p.y * sy, 6, 0, Math.PI * 2); ctx.stroke();
+  const W = view.w;
+  const H = view.h;
+
+  // Top-left: health bar, cash, ammo.
+  panel(ctx, 12, 12, 250, 86, 'rgba(12,14,20,0.72)');
+  text(ctx, 'MILO VEGA', 24, 38, 15, '#ffffff', 'left', true);
+  ctx.fillStyle = '#22242e';
+  ctx.beginPath();
+  ctx.roundRect(24, 46, 150, 14, 7);
+  ctx.fill();
+  ctx.fillStyle = p.health > 50 ? '#3ddc6a' : p.health > 25 ? '#f2c94c' : '#e84a4a';
+  ctx.beginPath();
+  ctx.roundRect(24, 46, 150 * clamp(p.health / 100, 0, 1), 14, 7);
+  ctx.fill();
+  text(ctx, `${Math.ceil(p.health)}`, 182, 59, 14, '#ffffff', 'left', true);
+  text(ctx, `$${p.cash.toLocaleString('en-US')}`, 24, 86, 18, '#7dff5a', 'left', true);
+  text(ctx, `Ammo ${p.ammo}${p.inCar ? '  •  DRIVING' : ''}`, 150, 86, 14, '#cfd3da', 'left');
+
+  // Top-centre: wanted stars.
+  const stars = '★'.repeat(G.wanted) + '☆'.repeat(5 - G.wanted);
+  panel(ctx, W / 2 - 90, 12, 180, 40, 'rgba(12,14,20,0.72)');
+  text(ctx, stars, W / 2, 41, 22, G.wanted > 0 ? '#ffb02a' : '#5a5f6b', 'center', true);
+
+  // Minimap, top-right.
+  drawMinimap(ctx, G, W - 188, 12, 176);
+
+  // Bottom-left: current objective.
+  const m = currentMission(G);
+  if (m && G.state === 'playing') {
+    const obj = `${m.name}: ${m.objective}`;
+    ctx.font = `bold 15px ${FONT}`;
+    const w = ctx.measureText(obj).width;
+    panel(ctx, 12, H - 52, Math.min(560, w + 36), 40, 'rgba(12,14,20,0.72)');
+    text(ctx, '◆ ' + obj, 28, H - 26, 15, '#ffe14d', 'left', true);
+  }
+
+  // Centre banner (mission updates, wanted alerts).
+  if (G.banner && G.banner.t < G.banner.life) {
+    const b = G.banner;
+    ctx.font = `bold 20px ${FONT}`;
+    const w = ctx.measureText(b.text).width;
+    panel(ctx, W / 2 - w / 2 - 18, 64, w + 36, 38, 'rgba(12,14,20,0.78)');
+    text(ctx, b.text, W / 2, 90, 20, '#ffffff', 'center', true);
+  }
+  // Mission briefing line under the banner.
+  if (G.missionBrief && G.missionBrief.t < G.missionBrief.life) {
+    const b = G.missionBrief;
+    ctx.font = `15px ${FONT}`;
+    const w = Math.min(W - 120, ctx.measureText(b.text).width);
+    panel(ctx, W / 2 - w / 2 - 14, 110, w + 28, 34, 'rgba(12,14,20,0.62)');
+    text(ctx, b.text, W / 2, 133, 15, '#ffe9f6', 'center');
+  }
+
+  // Bust meter while a cruiser is on top of the player on foot.
+  if (!p.inCar && G.wanted > 0) {
+    let worst = 0;
+    for (const cop of G.police) worst = Math.max(worst, cop.bustTimer || 0);
+    if (worst > 0) {
+      panel(ctx, W / 2 - 110, H - 96, 220, 30, 'rgba(12,14,20,0.78)');
+      text(ctx, 'BUSTED IN…', W / 2 - 96, H - 76, 14, '#ff5a5a', 'left', true);
+      ctx.fillStyle = '#ff5a5a';
+      ctx.fillRect(W / 2 + 8, H - 88, 92 * clamp(worst / 1.2, 0, 1), 12);
+    }
+  }
+
+  // Crosshair when on foot.
+  if (!p.inCar && G.state === 'playing') {
+    const mx = G.input.mouse.x;
+    const my = G.input.mouse.y;
+    ctx.strokeStyle = 'rgba(255,255,255,0.9)';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.arc(mx, my, 9, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(mx - 13, my);
+    ctx.lineTo(mx - 5, my);
+    ctx.moveTo(mx + 5, my);
+    ctx.lineTo(mx + 13, my);
+    ctx.moveTo(mx, my - 13);
+    ctx.lineTo(mx, my - 5);
+    ctx.moveTo(mx, my + 5);
+    ctx.lineTo(mx, my + 13);
+    ctx.stroke();
+  }
+
+  // Bottom-right: controls hint + mute state.
+  text(ctx, `H help   •   M ${G.audio.muted ? 'unmute' : 'mute'}   •   P pause`, W - 200, H - 16, 13, 'rgba(255,255,255,0.75)', 'left');
+}
+
+function drawMinimap(ctx, G, x, y, size) {
+  const scale = size / CFG.WORLD;
+  panel(ctx, x - 6, y - 6, size + 12, size + 12, 'rgba(12,14,20,0.78)');
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(x, y, size, size);
+  ctx.clip();
+  // Ground, water, roads.
+  ctx.fillStyle = '#2e6b4f';
+  ctx.fillRect(x, y, size, size);
+  ctx.fillStyle = '#1d6f8e';
+  ctx.fillRect(x + G.world.water.x * scale, y + G.world.water.y * scale, G.world.water.w * scale, G.world.water.h * scale);
+  ctx.strokeStyle = '#565b66';
+  ctx.lineWidth = 3;
+  for (const c of G.world.lines) {
+    ctx.beginPath();
+    ctx.moveTo(x + c * scale, y);
+    ctx.lineTo(x + c * scale, y + size);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(x, y + c * scale);
+    ctx.lineTo(x + size, y + c * scale);
+    ctx.stroke();
+  }
+  // Mission target: pulsing yellow diamond.
+  if (G.mission && !G.mission.done) {
+    const pulse = 4 + Math.sin(G.time * 5) * 1.5;
+    ctx.fillStyle = '#ffe14d';
+    ctx.save();
+    ctx.translate(x + G.mission.target.x * scale, y + G.mission.target.y * scale);
+    ctx.rotate(Math.PI / 4);
+    ctx.fillRect(-pulse, -pulse, pulse * 2, pulse * 2);
+    ctx.restore();
+  }
+  // Police: red/blue dots. Player: white dot with ring.
+  for (const cop of G.police) {
+    ctx.fillStyle = Math.floor(G.time * 6) % 2 === 0 ? '#ff2a2a' : '#2a6bff';
+    ctx.beginPath();
+    ctx.arc(x + cop.x * scale, y + cop.y * scale, 3.5, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  ctx.fillStyle = '#ffffff';
+  ctx.beginPath();
+  ctx.arc(x + G.player.x * scale, y + G.player.y * scale, 4, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.strokeStyle = '#111111';
+  ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  ctx.arc(x + G.player.x * scale, y + G.player.y * scale, 5.5, 0, Math.PI * 2);
+  ctx.stroke();
+  // District label.
+  const d = G.worldDistrict;
+  if (d) text(ctx, d.toUpperCase(), x + size / 2, y + size + 24, 11, '#ffffff', 'center', true);
   ctx.restore();
 }
 
-export function roundRect(ctx, x, y, w, h, r) {
-  ctx.beginPath();
-  ctx.moveTo(x + r, y); ctx.arcTo(x + w, y, x + w, y + h, r); ctx.arcTo(x + w, y + h, x, y + h, r);
-  ctx.arcTo(x, y + h, x, y, r); ctx.arcTo(x, y, x + w, y, r); ctx.closePath();
+function screenPanel(ctx, view, title, lines, prompt, accent) {
+  const W = view.w;
+  const H = view.h;
+  ctx.fillStyle = 'rgba(8,10,16,0.62)';
+  ctx.fillRect(0, 0, W, H);
+  const pw = 640;
+  const ph = 120 + lines.length * 30 + 70;
+  const x = (W - pw) / 2;
+  const y = (H - ph) / 2;
+  panel(ctx, x, y, pw, ph, 'rgba(12,14,20,0.92)');
+  ctx.strokeStyle = accent || '#ff5ad1';
+  ctx.lineWidth = 3;
+  ctx.strokeRect(x, y, pw, ph);
+  text(ctx, title, W / 2, y + 64, 44, accent || '#ff5ad1', 'center', true);
+  lines.forEach((line, i) => {
+    text(ctx, line, W / 2, y + 108 + i * 30, 16, '#e8eaf0', 'center');
+  });
+  if (prompt) text(ctx, prompt, W / 2, y + ph - 28, 17, '#ffe14d', 'center', true);
 }
-export function star(ctx, cx, cy, r) {
-  ctx.beginPath();
-  for (let i = 0; i < 10; i += 1) {
-    const a = -Math.PI / 2 + (i * Math.PI) / 5, rr = i % 2 === 0 ? r : r * 0.45;
-    const x = cx + Math.cos(a) * rr, y = cy + Math.sin(a) * rr;
-    if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
-  }
-  ctx.closePath(); ctx.fill();
+
+export function drawTitle(ctx, G, view, save) {
+  const lines = [
+    'A neon palm-city. One driver-for-hire. Four jobs from fixer Carmen Sol.',
+    'Steal cars, outrun the Solmar Bay police, and pull off The Bay Job.',
+    '',
+    'WASD / arrows — move & drive      E — enter / exit car      F — punch',
+    'Mouse aim, click — shoot      P — pause      M — mute      H — help',
+    '',
+    save ? `Save found: $${save.cash.toLocaleString('en-US')} banked, mission ${Math.min(save.missionIndex + 1, 4)} of 4 — press Enter to continue` : 'No save yet — press Enter to start a new story',
+  ];
+  screenPanel(ctx, view, 'SOLMAR BAY', lines, 'Press Enter or click to play', '#ff5ad1');
+}
+
+export function drawPaused(ctx, view) {
+  screenPanel(ctx, view, 'PAUSED', ['Solmar Bay waits for no one. Well — right now it does.', 'Your progress is saved.'], 'Press P to resume', '#37e6ff');
+}
+
+export function drawBusted(ctx, view) {
+  screenPanel(ctx, view, 'BUSTED', ['The SBPD caught up with Milo Vega.', 'You lose 10% of your cash. The heat is off — for now.'], 'Press Enter to get back out there', '#ffb02a');
+}
+
+export function drawWasted(ctx, view) {
+  screenPanel(ctx, view, 'WASTED', ['Milo Vega got in over his head on the streets of Solmar Bay.', 'You lose half your cash. Carmen Sol is not impressed.'], 'Press Enter to try again', '#e84a4a');
+}
+
+export function drawWin(ctx, G, view) {
+  const lines = [
+    'The Bay Job is done. Milo Vega drives off into the Solmar Bay sunset,',
+    'a legend of the Neon Mile — and Carmen Sol already has the next job lined up.',
+    '',
+    `Final take: $${G.player.cash.toLocaleString('en-US')}`,
+    'Thanks for playing Solmar Bay.',
+  ];
+  screenPanel(ctx, view, 'LEGEND OF THE BAY', lines, 'Press Enter to keep cruising Solmar Bay', '#7dff5a');
+}
+
+export function drawHelp(ctx, view) {
+  const lines = [
+    'WASD / arrows — walk, or drive when in a car (W accelerate, S brake/reverse)',
+    'E — steal / enter the nearest car, or step out of it',
+    'F — punch      Mouse — aim      Click — shoot your pistol',
+    'Stealing cars, hitting people and shooting cops raises your wanted level.',
+    'Lose the cops: break line of sight and wait for the stars to fade.',
+    'On foot, a cop standing on you fills the BUSTED meter. In a car, rams hurt.',
+    'Finish all four missions for Carmen Sol to beat the game. Progress auto-saves.',
+  ];
+  screenPanel(ctx, view, 'HOW TO PLAY', lines, 'Press H to close', '#37e6ff');
 }

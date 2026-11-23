@@ -1,12 +1,12 @@
-// Solmar Bay — a gta6-01 entry I built in this session (Node 22, standard library only):
-// the game is this directory's game/ folder, plain static files a desktop browser loads
-// offline (game/index.html and its ES modules, no library and no network request), and the
-// program hands it in. It copies game/ and screenshots/ from beside this file to /output
-// and writes /output/dossier.json, the summary the judge reads, with the vendored make.fun
-// library. Solmar Bay is an original top-down 2D open-world crime game: Milo Vega explores
-// a neon palm-city on foot and by car, steals cars, outruns the Solmar Bay police, runs
-// four chained missions for fixer Carmen Sol, fights with fists and a pistol, and saves
-// progress in localStorage. Pure Canvas 2D + WebAudio, zero dependencies.
+// Solmar Bay: an original top-down 2D open-world crime game for make.fun gta6-01
+// (Node 22, standard library only): the game is this directory's game/ folder,
+// plain static files a desktop browser loads offline (game/index.html and its ES
+// modules, no library and no network request), and the program hands it in. It
+// copies game/ and screenshots/ from beside this file to /output and writes
+// /output/dossier.json, the summary the judge reads, with the vendored make.fun
+// library. Explore the neon palm-city of Solmar Bay on foot and by car, steal cars,
+// outrun the Solmar Bay police, run four missions for fixer Carmen Sol, and save
+// your progress. Pure Canvas 2D + WebAudio, zero dependencies.
 //
 // Serve it locally with `node serve.ts`, then open http://localhost:8080.
 // Outside the grader's container, MAKEFUN_OUTPUT_DIR stands in for /output:

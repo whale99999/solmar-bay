@@ -1,76 +1,112 @@
-// Solmar Bay — the city itself: roads, blocks, buildings, palms, beach and docks.
-// Generated once from the seeded RNG so every visit (and every screenshot seed)
-// builds the same city. Also owns collision tests and particles.
-import { WORLD, ROADS_X, ROADS_Y, ROAD_W, PALETTE, createRandom, pick, clamp } from './config.js';
+// Solmar Bay — the city: road grid, blocks, buildings, parks and the waterfront.
+// Everything is placed from a seeded RNG, so the same seed builds the same city.
+import { CFG, clamp, mulberry32, pick } from './config.js';
 
-export function createCity(seed) {
-  const rng = createRandom(seed);
-  const buildings = [];
-  const palms = [];
-  const piers = [];
-  // Buildings fill each block between roads, leaving sidewalk margins.
-  const xs = [0, ...ROADS_X, WORLD.width];
-  const ys = [0, ...ROADS_Y, WORLD.height];
-  for (let bi = 0; bi < xs.length - 1; bi += 1) {
-    for (let bj = 0; bj < ys.length - 1; bj += 1) {
-      const x0 = xs[bi] + (bi === 0 ? 40 : ROAD_W / 2 + 24);
-      const x1 = xs[bi + 1] - (bi === xs.length - 2 ? 40 : ROAD_W / 2 + 24);
-      const y0 = ys[bj] + (bj === 0 ? 40 : ROAD_W / 2 + 24);
-      const y1 = ys[bj + 1] - (bj === ys.length - 2 ? 40 : ROAD_W / 2 + 24);
-      // 1-3 buildings per block, with a plaza gap sometimes.
-      const n = 1 + Math.floor(rng() * 3);
-      for (let k = 0; k < n; k += 1) {
-        const w = 90 + rng() * 150, h = 80 + rng() * 130;
-        const x = x0 + rng() * Math.max(1, (x1 - x0) - w);
-        const y = y0 + rng() * Math.max(1, (y1 - y0) - h);
-        buildings.push({ x, y, w, h, color: pick(rng, PALETTE.building), roof: rng() > 0.5, neon: rng() > 0.6 });
-      }
-      // Palms along the block edges.
-      const pn = 2 + Math.floor(rng() * 4);
-      for (let k = 0; k < pn; k += 1) palms.push({ x: x0 + rng() * (x1 - x0), y: y0 + rng() * (y1 - y0), s: 0.8 + rng() * 0.6 });
-    }
-  }
-  // Coral Docks piers jut into the bay on the south-west shore.
-  for (let k = 0; k < 4; k += 1) piers.push({ x: 180 + k * 300, y: WORLD.height - 60, w: 120, h: 60 });
-  return { seed, buildings, palms, piers, rng };
+export function roadCentres() {
+  const lines = [];
+  for (let v = 200; v <= CFG.WORLD - 200; v += CFG.ROAD_GAP) lines.push(v);
+  return lines;
 }
 
+// Is this point on a road (within the asphalt, not the sidewalk)?
 export function onRoad(x, y) {
-  for (const rx of ROADS_X) if (Math.abs(x - rx) < ROAD_W / 2) return true;
-  for (const ry of ROADS_Y) if (Math.abs(y - ry) < ROAD_W / 2) return true;
+  const half = CFG.ROAD_W / 2;
+  for (const c of roadCentres()) {
+    if (Math.abs(x - c) <= half || Math.abs(y - c) <= half) return true;
+  }
   return false;
 }
-export function nearestRoadX(x) { let best = ROADS_X[0]; for (const rx of ROADS_X) if (Math.abs(rx - x) < Math.abs(best - x)) best = rx; return best; }
-export function nearestRoadY(y) { let best = ROADS_Y[0]; for (const ry of ROADS_Y) if (Math.abs(ry - y) < Math.abs(best - y)) best = ry; return best; }
 
-// Circle vs building rectangles: push the circle out, return true on hit.
-export function collideBuildings(city, ent, radius) {
-  let hit = false;
-  for (const b of city.buildings) {
-    const cx = clamp(ent.x, b.x, b.x + b.w), cy = clamp(ent.y, b.y, b.y + b.h);
-    const dx = ent.x - cx, dy = ent.y - cy, d2 = dx * dx + dy * dy;
-    if (d2 < radius * radius) {
-      hit = true;
-      if (d2 > 0.01) { const d = Math.sqrt(d2); ent.x = cx + (dx / d) * radius; ent.y = cy + (dy / d) * radius; }
-      else ent.x = b.x - radius;
+export function nearestRoadCentre(v) {
+  const lines = roadCentres();
+  let best = lines[0];
+  for (const c of lines) if (Math.abs(c - v) < Math.abs(best - v)) best = c;
+  return best;
+}
+
+export function districtAt(x, y) {
+  for (const d of CFG.DISTRICTS) {
+    if (x >= d.x0 && x < d.x1 && y >= d.y0 && y < d.y1) return d;
+  }
+  return CFG.DISTRICTS[0];
+}
+
+export function buildWorld(seed) {
+  const rng = mulberry32(seed);
+  const lines = roadCentres();
+  const buildings = [];
+  const parks = [];
+  const palms = [];
+
+  // The Coral Docks waterfront: water along the south-east corner.
+  const water = { x: 2350, y: 2450, w: CFG.WORLD - 2350, h: CFG.WORLD - 2450 };
+
+  // One building (or park) per city block, inset from the roads.
+  for (let bi = 0; bi < lines.length - 1; bi += 1) {
+    for (let bj = 0; bj < lines.length - 1; bj += 1) {
+      const x0 = lines[bi] + CFG.ROAD_W / 2 + 34;
+      const y0 = lines[bj] + CFG.ROAD_W / 2 + 34;
+      const x1 = lines[bi + 1] - CFG.ROAD_W / 2 - 34;
+      const y1 = lines[bj + 1] - CFG.ROAD_W / 2 - 34;
+      // Skip blocks swallowed by the waterfront.
+      if (x0 > water.x - 40 && y0 > water.y - 40) continue;
+      if (rng() < 0.16) {
+        parks.push({ x: x0, y: y0, w: x1 - x0, h: y1 - y0 });
+        for (let p = 0; p < 5; p += 1) {
+          palms.push({ x: x0 + 30 + rng() * (x1 - x0 - 60), y: y0 + 30 + rng() * (y1 - y0 - 60) });
+        }
+        continue;
+      }
+      const w = x1 - x0;
+      const h = y1 - y0;
+      buildings.push({
+        x: x0, y: y0, w, h,
+        color: pick(rng, CFG.COLORS.roof),
+        neon: rng() < 0.45 ? pick(rng, CFG.COLORS.neon) : null,
+        hgt: 0.5 + rng() * 0.8,
+      });
     }
   }
-  ent.x = clamp(ent.x, 24, WORLD.width - 24);
-  ent.y = clamp(ent.y, 24, WORLD.height - 24);
-  return hit;
-}
+  // Palms lining the Palmera Strip boulevard.
+  for (let y = 240; y < CFG.WORLD - 200; y += 130) {
+    palms.push({ x: 168, y });
+    palms.push({ x: 232, y: y + 60 });
+  }
 
-export function makeParticles() { return []; }
-export function burst(particles, x, y, color, n, speed) {
-  for (let i = 0; i < n; i += 1) {
-    const a = Math.random() * Math.PI * 2, s = speed * (0.4 + Math.random() * 0.8);
-    particles.push({ x, y, vx: Math.cos(a) * s, vy: Math.sin(a) * s, life: 0.5 + Math.random() * 0.5, max: 1, color, size: 2 + Math.random() * 4 });
+  function hitsBuilding(x, y, r) {
+    for (const b of buildings) {
+      if (x + r > b.x && x - r < b.x + b.w && y + r > b.y && y - r < b.y + b.h) return b;
+    }
+    return null;
   }
-  if (particles.length > 400) particles.splice(0, particles.length - 400);
-}
-export function stepParticles(particles, dt) {
-  for (let i = particles.length - 1; i >= 0; i -= 1) {
-    const p = particles[i]; p.life -= dt; p.x += p.vx * dt; p.y += p.vy * dt; p.vx *= 0.96; p.vy *= 0.96;
-    if (p.life <= 0) particles.splice(i, 1);
+
+  // Push a circle out of any building it overlaps; returns the building hit, if any.
+  function resolveBuilding(p, r) {
+    const b = hitsBuilding(p.x, p.y, r);
+    if (!b) return null;
+    const cx = clamp(p.x, b.x, b.x + b.w);
+    const cy = clamp(p.y, b.y, b.y + b.h);
+    let dx = p.x - cx;
+    let dy = p.y - cy;
+    if (dx === 0 && dy === 0) { dx = 0; dy = -1; }
+    const d = Math.hypot(dx, dy) || 1;
+    p.x = cx + (dx / d) * r;
+    p.y = cy + (dy / d) * r;
+    return b;
   }
+
+  function inWater(x, y) {
+    return x > water.x && y > water.y;
+  }
+
+  return {
+    seed, rng, lines, buildings, parks, palms, water,
+    hitsBuilding, resolveBuilding, inWater,
+    // Landmarks the missions use.
+    garage: { x: 620, y: 620, label: 'Palmera Garage' },
+    packageSpot: { x: 1820, y: 1020, label: 'Neon Mile drop' },
+    docks: { x: 2720, y: 2320, label: 'Coral Docks pier' },
+    safehouse: { x: 2620, y: 420, label: 'Vista Hills safehouse' },
+    spawn: { x: 420, y: 420 },
+  };
 }

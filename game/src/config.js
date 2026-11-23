@@ -1,35 +1,41 @@
-// Solmar Bay — tuning, palette, districts and shared helpers.
-// A fictional sun-soaked neon palm-city. Nothing here is from any real game.
-export const WORLD = { width: 3200, height: 2400 };
-export const STEP = 1 / 60;
-export const SAVE_KEY = 'solmar-bay.save.v1';
-export const FONT = 'system-ui, -apple-system, "Segoe UI", sans-serif';
-
-export const PALETTE = {
-  sky: '#1d2b4a', grass: '#2e6b4f', sand: '#c9a86a', road: '#33363f', roadLine: '#e8c84a',
-  sidewalk: '#8a7f6a', building: ['#e07856', '#4fa8a0', '#e8b34a', '#7a6fb0', '#5b8fd6', '#c65f7a'],
-  water: '#2a7fa8', palm: '#3f9e5f', neonPink: '#ff4fd8', neonCyan: '#37e6ff', neonGold: '#ffd23f',
-  text: '#f5f1e6', muted: '#b8b0a0', panel: 'rgba(12,16,28,0.82)', danger: '#ff4d4d',
-  police: '#1c2436', player: '#ffd23f',
+// Solmar Bay — shared tuning, palette and tiny helpers.
+// Original top-down 2D open-world crime game for make.fun gta6-01.
+export const CFG = {
+  WORLD: 3200, // world is WORLD x WORLD px
+  ROAD_GAP: 400, // distance between road centre lines
+  ROAD_W: 64,
+  PLAYER_R: 14,
+  CAR_W: 26,
+  CAR_L: 46,
+  WALK_SPEED: 175,
+  CAR_ACCEL: 430,
+  CAR_MAX: 390,
+  CAR_REVERSE: 165,
+  CAR_TURN: 2.7,
+  BULLET_SPEED: 780,
+  SAVE_KEY: 'solmarbay-save-v1',
+  COLORS: {
+    ground: '#2e6b4f',
+    groundAlt: '#2a6248',
+    park: '#3f8f57',
+    road: '#3a3a44',
+    roadLine: '#e8c95a',
+    sidewalk: '#8a8f96',
+    water: '#1d6f8e',
+    sand: '#d9b380',
+    roof: ['#c96f4a', '#d9a05a', '#7a6fb0', '#4fa08a', '#b05a7a', '#5a8ac9'],
+    neon: ['#ff5ad1', '#37e6ff', '#ffe14d', '#7dff5a'],
+  },
+  DISTRICTS: [
+    { name: 'Palmera Strip', x0: 0, y0: 0, x1: 1100, y1: 1700, tint: '#e8a34d' },
+    { name: 'Neon Mile', x0: 1100, y0: 200, x1: 2300, y1: 1700, tint: '#ff5ad1' },
+    { name: 'Vista Hills', x0: 2300, y0: 0, x1: 3200, y1: 1100, tint: '#7dff5a' },
+    { name: 'Coral Docks', x0: 0, y0: 1700, x1: 3200, y1: 3200, tint: '#37e6ff' },
+  ],
 };
 
-export const DISTRICTS = [
-  { name: 'Palmera Strip', x: 0, y: 0, w: 1600, h: 1200, tint: '#e8b34a' },
-  { name: 'Vista Hills', x: 1600, y: 0, w: 1600, h: 1200, tint: '#7a6fb0' },
-  { name: 'Coral Docks', x: 0, y: 1200, w: 1600, h: 1200, tint: '#4fa8a0' },
-  { name: 'Neon Mile', x: 1600, y: 1200, w: 1600, h: 1200, tint: '#ff4fd8' },
-];
-
-// Grid roads: verticals and horizontals, width 140, so blocks sit between them.
-export const ROADS_X = [400, 1000, 1600, 2200, 2800];
-export const ROADS_Y = [400, 900, 1400, 1900];
-export const ROAD_W = 140;
-
-export const PLAYER_CFG = { radius: 14, walkSpeed: 230, hp: 100, punchDamage: 25, pistolDamage: 34 };
-export const CAR_CFG = { length: 54, width: 26, maxSpeed: 520, accel: 420, reverse: 180, turn: 2.9 };
-export const COLORS_CAR = ['#e5534b', '#4fa8a0', '#e8b34a', '#7a6fb0', '#5b8fd6', '#f5f1e6', '#ff8c42', '#37e6ff'];
-
-export function createRandom(seed) {
+// Deterministic RNG (mulberry32) so ?seed= scenes render identically.
+export function mulberry32(seed) {
   let a = seed >>> 0;
   return function () {
     a |= 0; a = (a + 0x6d2b79f5) | 0;
@@ -38,11 +44,15 @@ export function createRandom(seed) {
     return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
   };
 }
+
 export function clamp(v, lo, hi) { return v < lo ? lo : v > hi ? hi : v; }
-export function dist(ax, ay, bx, by) { const dx = ax - bx, dy = ay - by; return Math.sqrt(dx * dx + dy * dy); }
-export function angleTo(ax, ay, bx, by) { return Math.atan2(by - ay, bx - ax); }
-export function pick(rng, arr) { return arr[Math.floor(rng() * arr.length)]; }
-export function districtAt(x, y) {
-  for (const d of DISTRICTS) if (x >= d.x && x < d.x + d.w && y >= d.y && y < d.y + d.h) return d;
-  return DISTRICTS[0];
+export function lerp(a, b, t) { return a + (b - a) * t; }
+export function dist2(ax, ay, bx, by) { const dx = ax - bx, dy = ay - by; return dx * dx + dy * dy; }
+export function angTo(ax, ay, bx, by) { return Math.atan2(by - ay, bx - ax); }
+export function angDiff(a, b) {
+  let d = b - a;
+  while (d > Math.PI) d -= Math.PI * 2;
+  while (d < -Math.PI) d += Math.PI * 2;
+  return d;
 }
+export function pick(rng, arr) { return arr[Math.floor(rng() * arr.length)]; }

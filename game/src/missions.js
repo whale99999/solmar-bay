@@ -1,68 +1,101 @@
-// Solmar Bay — the story: fixer Carmen Sol hires Milo Vega for four chained jobs.
-// Each mission has stages with a map marker; reaching it advances the stage, pays
-// cash, and unlocks the next job. Save progress in localStorage via main.js.
+// Solmar Bay — missions and story: four chained jobs from fixer Carmen Sol.
+// Each mission has a briefing, a map target, a completion rule and a cash reward.
+import { CFG } from './config.js';
+import { addWanted, spawnPoliceCar } from './police.js';
+
 export const MISSIONS = [
   {
-    id: 'first-fare', title: '1 · First Fare', giver: 'Carmen Sol',
-    brief: 'Milo Vega, driver-for-hire, needs a car. Steal any parked car on the Strip, then bring it to the yellow marker at the Palmera garage.',
-    stages: [
-      { text: 'Steal a car — walk up to a parked car and press E', x: 1000, y: 340, r: 90, needCar: true },
-      { text: 'Deliver the car to the Palmera garage', x: 700, y: 700, r: 90, needCar: true },
-    ], reward: 250,
+    name: 'First Fare',
+    reward: 500,
+    radius: 95,
+    needCar: true,
+    briefing: 'Carmen Sol: "Milo, first job. Jack a car — any car — and bring it to the Palmera Garage. Don\'t scratch it. Much."',
+    objective: 'Steal a car, then deliver it to the Palmera Garage',
+    target(G) { return G.world.garage; },
+    onStart() {},
   },
   {
-    id: 'neon-pickup', title: '2 · Neon Pickup', giver: 'Carmen Sol',
-    brief: 'A package is waiting in the Neon Mile. Pick it up on foot or by car, then run it down to the Coral Docks before the buyer walks.',
-    stages: [
-      { text: 'Pick up the package in the Neon Mile', x: 2500, y: 1700, r: 90 },
-      { text: 'Deliver the package to the Coral Docks', x: 600, y: 2100, r: 90 },
-    ], reward: 400,
+    name: 'Neon Pickup',
+    reward: 800,
+    radius: 75,
+    needCar: false,
+    briefing: 'Carmen Sol: "A package is waiting on the Neon Mile, under the pink sign. Grab it and don\'t get chatty."',
+    objective: 'Pick up the package on the Neon Mile',
+    target(G) { return G.world.packageSpot; },
+    onStart() {},
   },
   {
-    id: 'dockside-heat', title: '3 · Dockside Heat', giver: 'Carmen Sol',
-    brief: 'The docks job went loud. The police are coming — reach the Coral Docks, then lose the heat and get to the safehouse in Vista Hills.',
-    stages: [
-      { text: 'Reach the Coral Docks — the police will be on you', x: 500, y: 2000, r: 100, wanted: 3 },
-      { text: 'Lose the heat, then reach the Vista Hills safehouse', x: 2400, y: 600, r: 100, needCool: true },
-    ], reward: 600,
+    name: 'Dockside Heat',
+    reward: 1500,
+    radius: 95,
+    needCar: false,
+    briefing: 'Carmen Sol: "The docks job went loud. SBPD is already rolling — get to the Coral Docks pier and lose them there."',
+    objective: 'Reach the Coral Docks pier while the police chase you',
+    target(G) { return G.world.docks; },
+    onStart(G) {
+      addWanted(G, 3, 'docks job went loud');
+      spawnPoliceCar(G);
+      spawnPoliceCar(G);
+    },
   },
   {
-    id: 'bay-job', title: '4 · The Bay Job', giver: 'Carmen Sol',
-    brief: 'The finale. Hit the Vista Hills vault, grab the cash, outrun a four-star response, and bring it home to Carmen on the Palmera Strip.',
-    stages: [
-      { text: 'Hit the Vista Hills vault', x: 2600, y: 500, r: 100, wanted: 4 },
-      { text: 'Bring the cash home to Carmen — Palmera Strip', x: 1000, y: 700, r: 100 },
-    ], reward: 1000,
+    name: 'The Bay Job',
+    reward: 3000,
+    radius: 95,
+    needCar: false,
+    briefing: 'Carmen Sol: "Last one, Milo. The score is the safehouse in Vista Hills. Bring it home and we\'re legends of Solmar Bay."',
+    objective: 'Deliver the score to the Vista Hills safehouse',
+    target(G) { return G.world.safehouse; },
+    onStart() {},
   },
 ];
 
-export function missionState(G) {
-  if (G.missionIndex >= MISSIONS.length) return { done: true, title: 'All jobs done', text: 'Solmar Bay is yours, Milo. Free roam — keep the rep.', x: 0, y: 0, r: 0 };
-  const m = MISSIONS[G.missionIndex];
-  const s = m.stages[G.stageIndex] || m.stages[0];
-  return { done: false, title: m.title, brief: m.brief, text: s.text, x: s.x, y: s.y, r: s.r, stage: s, mission: m };
+export function currentMission(G) {
+  return G.missionIndex < MISSIONS.length ? MISSIONS[G.missionIndex] : null;
+}
+
+export function startMission(G, index) {
+  G.missionIndex = index;
+  const m = currentMission(G);
+  if (!m) return;
+  G.mission = { def: m, target: m.target(G), done: false };
+  G.banner = { text: `${m.name} — ${m.objective}`, t: 0, life: 4.5 };
+  G.missionBrief = { text: m.briefing, t: 0, life: 6 };
+  m.onStart(G);
+  G.save();
 }
 
 export function updateMissions(G, dt) {
-  if (G.missionIndex >= MISSIONS.length) return;
-  const cur = missionState(G);
+  // Chain the next job after a short beat between missions.
+  if (G.nextMissionTimer > 0) {
+    G.nextMissionTimer -= dt;
+    if (G.nextMissionTimer <= 0) startMission(G, G.missionIndex + 1);
+    return;
+  }
+  const m = G.mission;
+  if (!m || m.done) return;
   const p = G.player;
-  // Stage entry effects (heat spikes) fire once per stage.
-  if (cur.stage.wanted && !G.stageArmed) { G.wanted = Math.max(G.wanted, cur.stage.wanted); G.stageArmed = true; G.banner = 'Police response incoming!'; G.bannerTimer = 3; }
-  const d = Math.hypot(p.x - cur.x, p.y - cur.y);
-  const needCarOk = !cur.stage.needCar || !p.onFoot;
-  const needCoolOk = !cur.stage.needCool || G.wanted === 0;
-  if (d < cur.r && needCarOk && needCoolOk) {
-    const m = cur.mission;
-    G.stageIndex += 1; G.stageArmed = false;
-    G.audio.pickup();
-    if (G.stageIndex >= m.stages.length) {
-      p.cash += m.reward; G.missionIndex += 1; G.stageIndex = 0;
-      G.banner = `Job complete — +$${m.reward}`; G.bannerTimer = 3.5; G.audio.mission();
-      G.save();
-      if (G.missionIndex >= MISSIONS.length) { G.banner = 'THE BAY JOB DONE — Solmar Bay is yours!'; G.bannerTimer = 5; }
-    } else {
-      G.banner = 'Stage complete — next stop marked'; G.bannerTimer = 2.5;
+  const dx = p.x - m.target.x;
+  const dy = p.y - m.target.y;
+  const d = Math.hypot(dx, dy);
+  if (d < m.def.radius) {
+    if (m.def.needCar && !p.inCar) {
+      G.banner = { text: 'You need to be in a car for this one.', t: 0, life: 2 };
+      return;
     }
+    m.done = true;
+    p.cash += m.def.reward;
+    p.ammo += 12;
+    G.audio.missionDone();
+    G.particles.push({ kind: 'boom', x: m.target.x, y: m.target.y, t: 0, life: 0.7 });
+    if (G.missionIndex + 1 >= MISSIONS.length) {
+      G.banner = { text: `THE BAY JOB DONE — $${m.def.reward}!`, t: 0, life: 4 };
+      G.state = 'win';
+      G.save();
+      return;
+    }
+    G.banner = { text: `${m.def.name} complete! +$${m.def.reward}`, t: 0, life: 3.5 };
+    G.save();
+    G.nextMissionTimer = 2.2;
   }
 }
