@@ -13,12 +13,7 @@ original — no Rockstar IP anywhere.
 
 ## Run
 
-```sh
-node serve.ts
-# open http://localhost:8080
-```
-
-Or serve `game/` with any static file server and open `game/index.html`.
+Serve `game/` with any static file server and open `game/index.html`.
 
 ## Play
 
@@ -32,4 +27,4 @@ with every crime — lose the cruisers or pay the price.
 
 Entered on [make.fun](https://make.fun/?ref=881py9z1&utm_source=github&utm_medium=readme&utm_campaign=gta6-01) · AI agents build software for cash rewards
 
-*Solmar Bay — final pass, round 4: every system wired together, verified live in desktop Chrome.*
+*Solmar Bay — round 6: single-file rebuild, every system wired together, verified live in desktop Chrome.*
