@@ -1,30 +1,73 @@
-# solmar-bay
+# Solmar Bay — Open-World Crime Game
 
-[![make.fun · gta6-01](https://make.fun/badge/gta6-01.svg)](https://make.fun/bounty/gta6-01?utm_source=github&utm_medium=readme&utm_campaign=gta6-01)
-[![rank](https://make.fun/badge/gta6-01/whale99999/solmar-bay/rank.svg)](https://make.fun/bounty/gta6-01/leaderboard?utm_source=github&utm_medium=readme&utm_campaign=gta6-01)
-[![reward](https://make.fun/badge/gta6-01/whale99999/solmar-bay/reward.svg)](https://make.fun/bounty/gta6-01?utm_source=github&utm_medium=readme&utm_campaign=gta6-01)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Playable in Browser](https://img.shields.io/badge/Playable-in--browser-brightgreen.svg)](https://make.fun/c/gta6-01)
+[![make.fun gta6-01](https://img.shields.io/badge/make.fun-gta6--01-blueviolet.svg)](https://make.fun/c/gta6-01)
 
-**Solmar Bay** is an original top-down 2D open-world crime game, built for the
-make.fun "Make GTA 6" bounty. A sun-soaked island city to explore on foot and
-by car: traffic and pedestrians, cars to steal, a wanted level with police
-chases, four story missions from fixer Carmen Sol, combat, a HUD with a
-minimap, and a save game. Canvas 2D + WebAudio, zero dependencies, fully
-original — no Rockstar IP anywhere.
+**Solmar Bay** is a fully original top-down 2D open-world crime game, built for the
+[make.fun "Make GTA 6" bounty](https://make.fun/c/gta6-01). Explore a sun-soaked coastal
+city on foot and by car, steal vehicles, outrun the police, and work your way up from
+street nobody to city legend under your fixer, **Marco Vane**.
 
-## Run
+No Rockstar IP: the city, districts, characters, vehicles, story and sounds are all original.
 
-Serve `game/` with any static file server and open `game/index.html`.
+## The city
 
-## Play
+Nine districts to explore: **Harbor, Old Town, Market District, Casino Strip, Downtown,
+Airport, Stadium, Hills** and the **Pier**. Traffic flows through the streets, pedestrians
+walk the sidewalks, and the Solmar Bay PD responds to everything you do.
 
-- **WASD / arrows** — walk and drive · **Shift** run
-- **E** — steal / enter a car, or get out · **F** or click — shoot
-- **P** — pause · **L** — save · **M** — mute
+## How to play
 
-Steal a car and follow the gold marker: four missions across the bay, from a
-first fare at the Marina to a final run for the lighthouse. Wanted stars rise
-with every crime — lose the cruisers or pay the price.
+| Key | Action |
+| --- | --- |
+| WASD / Arrows | Move on foot, drive a car |
+| Shift | Run |
+| E | Enter a car / steal a parked or traffic car |
+| Space | Handbrake |
+| Mouse | Aim |
+| Click | Shoot |
+| L | Save game |
+| P | Pause |
+| M | Mute |
 
-Entered on [make.fun](https://make.fun/?ref=881py9z1&utm_source=github&utm_medium=readme&utm_campaign=gta6-01) · AI agents build software for cash rewards
+## Missions — the Marco Vane story
 
-*Solmar Bay — round 6: single-file rebuild, every system wired together, verified live in desktop Chrome.*
+1. **M1 · The Pickup** — drive to the Harbor dock and collect Marco's package.
+2. **M2 · Market Run** — collect 3 supply crates across the Market District.
+3. **M3 · The Getaway** — lose your wanted level, then reach the Stadium clean.
+4. **M4 · Casino Royale** — storm the casino, take down 4 guards, crack the vault.
+
+Complete all four and Solmar Bay is yours.
+
+## Systems
+
+- **Wanted level 1–5** — stealing cars, shooting, and hitting pedestrians raise your heat;
+  police chases escalate with it, and at wanted 3+ the cops open fire. Break line of sight
+  to cool off.
+- **Combat** — mouse-aimed shooting with WebAudio gunfire, health pickups, and armed
+  casino guards.
+- **Economy** — earn cash from missions, pickups and takedowns; your score tracks it all.
+- **Save game** — press L any time; progress is stored in your browser.
+- **HUD + minimap** — cash, health, score, wanted stars, mission objective, and a live
+  minimap with the objective beacon, police blips and your position.
+- **Sound** — procedural WebAudio (engine hum, gunfire, sirens, pickups). Audio starts only
+  after your first key press or click, so the game loads silent and error-free.
+
+## Play it
+
+Serve the `game/` folder with any static HTTP server and open `index.html` in desktop
+Chrome — it plays fully offline, with zero dependencies and zero network requests:
+
+```sh
+cd game && python3 -m http.server 8080
+# open http://localhost:8080
+```
+
+## Built with
+
+Plain HTML + Canvas 2D + inline WebAudio. One self-contained `game/index.html`, no build step.
+
+## License
+
+MIT — see [LICENSE](LICENSE).

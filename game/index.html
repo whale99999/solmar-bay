@@ -3,1319 +3,730 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Solmar Bay — open-world crime game</title>
+<title>Solmar Bay — Open World Crime Game</title>
 <style>
-  html, body { margin: 0; padding: 0; background: #0b1220; height: 100%; overflow: hidden; }
-  #wrap { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; }
-  canvas { display: block; background: #17351f; image-rendering: auto; }
-  #hint { position: fixed; left: 10px; bottom: 8px; color: #9fb3c8; font: 12px/1.4 system-ui, sans-serif; opacity: .75; pointer-events: none; }
+  html,body{margin:0;padding:0;background:#0b1020;height:100%;overflow:hidden;font-family:'Segoe UI',Arial,sans-serif}
+  #wrap{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;background:radial-gradient(1200px 700px at 50% 30%,#16224a,#0b1020)}
+  canvas{display:block;background:#1c2b1f;box-shadow:0 0 60px rgba(0,0,0,.7);border:2px solid #2a3a5f;border-radius:6px}
+  #hint{position:fixed;left:12px;bottom:10px;color:#9fb4d8;font-size:12px;opacity:.8;pointer-events:none}
 </style>
 </head>
 <body>
 <div id="wrap"><canvas id="game" width="1280" height="800"></canvas></div>
-<div id="hint">WASD move / drive &nbsp;·&nbsp; E enter car &nbsp;·&nbsp; F / click shoot &nbsp;·&nbsp; Shift run &nbsp;·&nbsp; P pause &nbsp;·&nbsp; L save &nbsp;·&nbsp; M mute</div>
 <script>
-'use strict';
-/* =====================================================================
+"use strict";
+/* ============================================================
    SOLMAR BAY — an original top-down 2D open-world crime game.
-   Canvas 2D + WebAudio, zero dependencies, plays offline.
-   No Rockstar / GTA IP: all names, art and audio are original.
-   ===================================================================== */
+   Own city, own characters, own story. No Rockstar IP.
+   Canvas 2D + inline WebAudio. Zero dependencies, zero network.
+   ============================================================ */
+const cv = document.getElementById('game');
+const ctx = cv.getContext('2d');
+const W = 1280, H = 800;
+const WORLD = { w: 3400, h: 2600 };
+const ROAD = 96;            // road width
+const BLOCK = 420;          // block pitch (road centre to road centre)
+const clamp = (v,a,b)=>v<a?a:v>b?b:v;
+const rand = (a,b)=>a+Math.random()*(b-a);
+const irand = (a,b)=>Math.floor(rand(a,b+1));
+const dist = (ax,ay,bx,by)=>Math.hypot(ax-bx,ay-by);
+const TAU = Math.PI*2;
+function angLerp(a,b,t){ let d=(b-a)%TAU; if(d>Math.PI)d-=TAU; if(d<-Math.PI)d+=TAU; return a+d*t; }
 
-// ---------------------------------------------------------------- utils
-const TAU = Math.PI * 2;
-function clamp(v, a, b) { return v < a ? a : v > b ? b : v; }
-function lerp(a, b, t) { return a + (b - a) * t; }
-function dist(x1, y1, x2, y2) { const dx = x2 - x1, dy = y2 - y1; return Math.sqrt(dx * dx + dy * dy); }
-function angTo(x1, y1, x2, y2) { return Math.atan2(y2 - y1, x2 - x1); }
-function angDiff(a, b) { let d = b - a; while (d > Math.PI) d -= TAU; while (d < -Math.PI) d += TAU; return d; }
-function rand(a, b) { return a + Math.random() * (b - a); }
-function randi(a, b) { return Math.floor(rand(a, b + 1)); }
-function pick(arr) { return arr[Math.floor(Math.random() * arr.length)]; }
-// Deterministic hash for decorative placement (stable world look).
-function hash2(x, y) { let h = (x * 374761393 + y * 668265263) | 0; h = (h ^ (h >> 13)) * 1274126177; return ((h ^ (h >> 16)) >>> 0) / 4294967295; }
+// ---------- districts ----------
+const DISTRICTS = [
+  {name:'Harbor',        x:0,    y:0,    w:1100, h:800,  col:'#3d6b8e', label:'#bfe3ff'},
+  {name:'Old Town',      x:1100, y:0,    w:1150, h:800,  col:'#7a6a4f', label:'#ffe9b0'},
+  {name:'Market District',x:2250,y:0,    w:1150, h:800,  col:'#6b4f7a', label:'#f3d1ff'},
+  {name:'Casino Strip',  x:0,    y:800,  w:1100, h:850,  col:'#8e3d5c', label:'#ffd3e2'},
+  {name:'Downtown',      x:1100, y:800,  w:1150, h:850,  col:'#4f6b7a', label:'#cfeaff'},
+  {name:'Airport',       x:2250, y:800,  w:1150, h:850,  col:'#5c6b3d', label:'#e8ffc9'},
+  {name:'Stadium',       x:0,    y:1650, w:1700, h:950,  col:'#3d7a52', label:'#d2ffd9'},
+  {name:'Hills',         x:1700, y:1650, w:1700, h:950,  col:'#6b5a3d', label:'#ffe4b3'},
+  {name:'Pier',          x:1700, y:800,  w:550,  h:850,  col:'#2f5f7a', label:'#bfe9ff'},
+];
+function districtAt(x,y){ for(const d of DISTRICTS) if(x>=d.x&&x<d.x+d.w&&y>=d.y&&y<d.y+d.h) return d; return DISTRICTS[4]; }
 
-// ---------------------------------------------------------------- world
-// World is 3200 x 2400 px. Roads form a grid; blocks hold buildings, parks,
-// the marina, the docks, the beach, the lighthouse and the safehouse.
-const WORLD = { w: 3200, h: 2400 };
-const ROAD_W = 96;                 // road width
-const BLOCK = 400;                 // block pitch (road + block)
-const ROADS_X = [];                // vertical road centre lines
-const ROADS_Y = [];                // horizontal road centre lines
-for (let x = 200; x < WORLD.w; x += BLOCK) ROADS_X.push(x);
-for (let y = 200; y < WORLD.h; y += BLOCK) ROADS_Y.push(y);
-
-function onRoad(x, y) {
-  for (const rx of ROADS_X) if (Math.abs(x - rx) < ROAD_W / 2 + 6) return true;
-  for (const ry of ROADS_Y) if (Math.abs(y - ry) < ROAD_W / 2 + 6) return true;
+// ---------- city layout: roads on a grid, buildings inside blocks ----------
+const ROADS_X = [], ROADS_Y = [];
+for(let x=210;x<WORLD.w;x+=BLOCK) ROADS_X.push(x);
+for(let y=210;y<WORLD.h;y+=BLOCK) ROADS_Y.push(y);
+function onRoad(x,y){
+  for(const rx of ROADS_X) if(Math.abs(x-rx)<ROAD/2+6) return true;
+  for(const ry of ROADS_Y) if(Math.abs(y-ry)<ROAD/2+6) return true;
   return false;
 }
-function nearestRoadPoint(x, y) {
-  // Snap a point onto the nearest road centre line.
-  let best = null, bd = 1e9;
-  for (const rx of ROADS_X) { const d = Math.abs(x - rx); if (d < bd) { bd = d; best = { x: rx, y }; } }
-  for (const ry of ROADS_Y) { const d = Math.abs(y - ry); if (d < bd) { bd = d; best = { x, y: ry }; } }
-  return best;
-}
-
-// Landmarks (name, x, y, radius, kind)
-const LANDMARKS = {
-  safehouse:  { name: 'Safehouse',   x: 600,  y: 2000, r: 90,  kind: 'safehouse' },
-  marina:     { name: 'Marina',      x: 2900, y: 400,  r: 110, kind: 'marina' },
-  docks:       { name: 'Docks',       x: 2900, y: 2000, r: 110, kind: 'docks' },
-  downtown:    { name: 'Downtown',    x: 1600, y: 1200, r: 170, kind: 'downtown' },
-  beach:       { name: 'Beach',       x: 400,  y: 400,  r: 150, kind: 'beach' },
-  lighthouse:  { name: 'Lighthouse',  x: 3000, y: 2200, r: 80,  kind: 'lighthouse' },
-  bank:        { name: 'Bay Bank',    x: 1800, y: 1000, r: 80,  kind: 'bank' },
-  park:        { name: 'Palm Park',   x: 1000, y: 1600, r: 120, kind: 'park' },
-};
-
-// Buildings: rectangles inside blocks (never on roads). Generated once.
 const BUILDINGS = [];
-(function buildCity() {
-  const kinds = ['house', 'shop', 'tower', 'house', 'shop', 'warehouse'];
-  for (let bx = 0; bx < 7; bx++) {
-    for (let by = 0; by < 5; by++) {
-      const x0 = 200 + bx * BLOCK + ROAD_W / 2 + 14;
-      const y0 = 200 + by * BLOCK + ROAD_W / 2 + 14;
-      const bw = BLOCK - ROAD_W - 28, bh = BLOCK - ROAD_W - 28;
-      // Skip landmark blocks so they stay open.
-      let skip = false;
-      for (const k in LANDMARKS) {
-        const L = LANDMARKS[k];
-        if (L.x > x0 - 60 && L.x < x0 + bw + 60 && L.y > y0 - 60 && L.y < y0 + bh + 60) { skip = true; break; }
-      }
-      if (skip) continue;
-      // 1-3 buildings per block.
-      const n = hash2(bx, by) > 0.55 ? 2 : 1;
-      for (let i = 0; i < n; i++) {
-        const w = n === 1 ? bw * 0.62 : bw * 0.42;
-        const h = n === 1 ? bh * 0.6 : bh * 0.42;
-        const x = x0 + (n === 1 ? bw * 0.19 : (i === 0 ? 6 : bw - w - 6));
-        const y = y0 + (n === 1 ? bh * 0.2 : 8);
-        const kind = kinds[Math.floor(hash2(bx * 3 + i, by * 7 + 1) * kinds.length)];
-        BUILDINGS.push({ x, y, w, h, kind, hue: Math.floor(hash2(bx, by + i) * 360) });
-      }
+(function buildCity(){
+  const palette=['#5a6b8c','#7c6a55','#6a7a5c','#8c5a6b','#4f5f7a','#7a7a4f','#5c4f7a','#6b4f4f'];
+  for(let bx=0; bx<8; bx++) for(let by=0; by<6; by++){
+    const x0=bx*BLOCK+ROAD/2+14, y0=by*BLOCK+ROAD/2+14;
+    const bw=BLOCK-ROAD-28, bh=BLOCK-ROAD-28;
+    const n=irand(2,3);
+    for(let i=0;i<n;i++){
+      const w=rand(70,150), h=rand(60,130);
+      const x=x0+rand(0,Math.max(1,bw-w)), y=y0+rand(0,Math.max(1,bh-h));
+      BUILDINGS.push({x,y,w,h,col:palette[(bx*7+by*3+i)%palette.length],hgt:irand(1,4)});
     }
   }
+  // landmark: casino tower on the Strip, stadium bowl, airport terminal
+  BUILDINGS.push({x:300,y:1050,w:260,h:170,col:'#a03d6b',hgt:6,land:'CASINO ROYALE'});
+  BUILDINGS.push({x:300,y:1850,w:420,h:260,col:'#3d7a52',hgt:2,land:'SOLMAR STADIUM'});
+  BUILDINGS.push({x:2600,y:1100,w:380,h:160,col:'#5c6b3d',hgt:3,land:'SOLMAR AIRPORT'});
 })();
-
-function rectsOverlap(ax, ay, aw, ah, b) { return ax < b.x + b.w && ax + aw > b.x && ay < b.y + b.h && ay + ah > b.y; }
-function collideBuildings(x, y, r) {
-  // Returns corrected position after pushing out of buildings.
-  for (const b of BUILDINGS) {
-    const cx = clamp(x, b.x, b.x + b.w), cy = clamp(y, b.y, b.y + b.h);
-    const dx = x - cx, dy = y - cy, d2 = dx * dx + dy * dy;
-    if (d2 < r * r) {
-      if (d2 < 0.001) { x = b.x - r; continue; }
-      const d = Math.sqrt(d2);
-      x = cx + (dx / d) * r; y = cy + (dy / d) * r;
-    }
-  }
-  return { x, y };
-}
-function pointInBuilding(x, y) {
-  for (const b of BUILDINGS) if (x > b.x && x < b.x + b.w && y > b.y && y < b.y + b.h) return b;
+function hitBuilding(x,y,r){
+  for(const b of BUILDINGS) if(x+r>b.x&&x-r<b.x+b.w&&y+r>b.y&&y-r<b.y+b.h) return b;
   return null;
 }
+function solidAt(x,y,r){ return x<r||y<r||x>WORLD.w-r||y>WORLD.h-r||!!hitBuilding(x,y,r); }
 
-// ---------------------------------------------------------------- audio
-// Procedural WebAudio only. AudioContext is created on first user gesture.
-const AudioSys = {
-  ctx: null, master: null, muted: false, engineOsc: null, engineGain: null,
-  sirenOsc: null, sirenGain: null, sirenLfo: null, started: false,
-  ensure() {
-    if (this.ctx) { if (this.ctx.state === 'suspended') this.ctx.resume(); return; }
-    try {
-      const AC = window.AudioContext || window.webkitAudioContext;
-      this.ctx = new AC();
-      this.master = this.ctx.createGain();
-      this.master.gain.value = this.muted ? 0 : 0.5;
-      this.master.connect(this.ctx.destination);
-      // Engine hum: low sawtooth through a lowpass, gain follows speed.
-      this.engineOsc = this.ctx.createOscillator();
-      this.engineOsc.type = 'sawtooth';
-      this.engineOsc.frequency.value = 55;
-      const lp = this.ctx.createBiquadFilter();
-      lp.type = 'lowpass'; lp.frequency.value = 320;
-      this.engineGain = this.ctx.createGain();
-      this.engineGain.gain.value = 0;
-      this.engineOsc.connect(lp); lp.connect(this.engineGain); this.engineGain.connect(this.master);
-      this.engineOsc.start();
-      // Police siren: two-tone triangle, LFO flips frequency.
-      this.sirenOsc = this.ctx.createOscillator();
-      this.sirenOsc.type = 'triangle';
-      this.sirenOsc.frequency.value = 700;
-      this.sirenGain = this.ctx.createGain();
-      this.sirenGain.gain.value = 0;
-      this.sirenLfo = this.ctx.createOscillator();
-      this.sirenLfo.frequency.value = 0.9;
-      const lfoGain = this.ctx.createGain(); lfoGain.gain.value = 180;
-      this.sirenLfo.connect(lfoGain); lfoGain.connect(this.sirenOsc.frequency);
-      this.sirenOsc.connect(this.sirenGain); this.sirenGain.connect(this.master);
-      this.sirenOsc.start(); this.sirenLfo.start();
-      this.started = true;
-    } catch (e) { /* audio unavailable — game continues silently */ }
-  },
-  setMuted(m) { this.muted = m; if (this.master) this.master.gain.value = m ? 0 : 0.5; },
-  update(speedNorm, wanted) {
-    if (!this.ctx) return;
-    const t = this.ctx.currentTime;
-    this.engineGain.gain.setTargetAtTime(0.02 + speedNorm * 0.09, t, 0.1);
-    this.engineOsc.frequency.setTargetAtTime(50 + speedNorm * 130, t, 0.1);
-    this.sirenGain.gain.setTargetAtTime(wanted >= 1 ? 0.045 : 0, t, 0.2);
-  },
-  blip(freq, dur, type, vol) {
-    if (!this.ctx || this.muted) return;
-    const t = this.ctx.currentTime;
-    const o = this.ctx.createOscillator(), g = this.ctx.createGain();
-    o.type = type || 'sine'; o.frequency.value = freq;
-    g.gain.setValueAtTime(vol || 0.15, t);
-    g.gain.exponentialRampToValueAtTime(0.001, t + (dur || 0.12));
-    o.connect(g); g.connect(this.master);
-    o.start(t); o.stop(t + (dur || 0.12) + 0.02);
-  },
-  noise(dur, vol) { // gunshot / crash burst
-    if (!this.ctx || this.muted) return;
-    const t = this.ctx.currentTime;
-    const len = Math.floor(this.ctx.sampleRate * (dur || 0.15));
-    const buf = this.ctx.createBuffer(1, len, this.ctx.sampleRate);
-    const d = buf.getChannelData(0);
-    for (let i = 0; i < len; i++) d[i] = (Math.random() * 2 - 1) * (1 - i / len);
-    const src = this.ctx.createBufferSource(); src.buffer = buf;
-    const g = this.ctx.createGain(); g.gain.value = vol || 0.25;
-    const f = this.ctx.createBiquadFilter(); f.type = 'highpass'; f.frequency.value = 800;
-    src.connect(f); f.connect(g); g.connect(this.master);
-    src.start(t);
-  },
-  jingle() { // mission-complete arpeggio
-    if (!this.ctx) return;
-    [523, 659, 784, 1047].forEach((f, i) => {
-      setTimeout(() => this.blip(f, 0.22, 'triangle', 0.2), i * 110);
-    });
-  },
-  pickup() { this.blip(880, 0.1, 'sine', 0.18); setTimeout(() => this.blip(1320, 0.12, 'sine', 0.15), 70); },
-  shot() { this.noise(0.14, 0.3); },
-  crash() { this.noise(0.25, 0.2); },
-  busted() { this.blip(220, 0.5, 'sawtooth', 0.2); setTimeout(() => this.blip(165, 0.6, 'sawtooth', 0.2), 250); },
-};
-
-// ---------------------------------------------------------------- input
-const keys = {};
-const mouse = { x: 0, y: 0, down: false };
-let justPressed = {};   // key -> true for one frame
-window.addEventListener('keydown', (e) => {
-  if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', ' '].includes(e.key)) e.preventDefault();
-  if (!keys[e.key.toLowerCase()]) justPressed[e.key.toLowerCase()] = true;
-  keys[e.key.toLowerCase()] = true;
-  AudioSys.ensure();
-});
-window.addEventListener('keyup', (e) => { keys[e.key.toLowerCase()] = false; });
-const canvas = document.getElementById('game');
-const ctx = canvas.getContext('2d');
-canvas.addEventListener('mousemove', (e) => {
-  const r = canvas.getBoundingClientRect();
-  mouse.x = (e.clientX - r.left) * (canvas.width / r.width);
-  mouse.y = (e.clientY - r.top) * (canvas.height / r.height);
-});
-canvas.addEventListener('mousedown', (e) => { mouse.down = true; AudioSys.ensure(); justPressed['mouse'] = true; });
-window.addEventListener('mouseup', () => { mouse.down = false; });
-
-// ---------------------------------------------------------------- state
-const SAVE_KEY = 'solmar-bay-save-v1';
-const CAR_TYPES = {
-  sedan:  { name: 'Sedan',    maxSpeed: 340, accel: 260, turn: 2.6, color: '#5b8dd9', w: 46, h: 22 },
-  taxi:    { name: 'Taxi',     maxSpeed: 320, accel: 250, turn: 2.7, color: '#f2c230', w: 46, h: 22 },
-  pickup:  { name: 'Pickup',   maxSpeed: 300, accel: 230, turn: 2.3, color: '#7a9e4b', w: 52, h: 24 },
-  sports:  { name: 'Sports',   maxSpeed: 430, accel: 330, turn: 3.1, color: '#d94f4f', w: 48, h: 21 },
-  police:  { name: 'Cruiser',  maxSpeed: 380, accel: 320, turn: 3.0, color: '#2b3a55', w: 48, h: 22 },
+// ---------- game state ----------
+const SAVE_KEY='solmar-bay-save-v1';
+const G = {
+  mode:'title',            // title | play | pause | dead | win
+  time:0, cash:120, health:100, wanted:0, wantedHeat:0,
+  score:0, kills:0, carsStolen:0,
+  player:{x:1500,y:1150,a:-Math.PI/2,speed:0,inCar:null,walk:0,gun:1},
+  cam:{x:1500,y:1150},
+  keys:{}, mouse:{x:640,y:400,down:false},
+  cars:[], peds:[], cops:[], bullets:[], pickups:[], parts:[],
+  mission:0, missionStep:0, missionText:'', objective:null, missionTimer:0,
+  msg:'', msgT:0, shake:0, muted:false, saveFlash:0,
+  story:[
+    'Marco Vane: "Kid, Solmar Bay eats the slow. Prove yourself and the city is yours."',
+    'Marco Vane: "The Harbor crew needs a driver. No questions, no cops. You in?"',
+    'Marco Vane: "One last job — the Casino Royale vault. Then we\'re legends."',
+  ],
 };
 const MISSIONS = [
-  { id: 1, title: 'First Fare', giver: 'Carmen Sol',
-    brief: 'Carmen needs a ride. Steal any car and drive to the Marina. Don\'t draw heat.',
-    target: 'marina', reward: 150, timeLimit: 0 },
-  { id: 2, title: 'Bay Runner', giver: 'Carmen Sol',
-    brief: 'A package for the Docks. Fast and quiet — you have 90 seconds.',
-    target: 'docks', reward: 300, timeLimit: 90 },
-  { id: 3, title: 'Heat Wave', giver: 'Carmen Sol',
-    brief: 'The bay police are on you. Lose the 3-star wanted level and vanish.',
-    target: null, reward: 450, timeLimit: 0, wanted: 3 },
-  { id: 4, title: 'The Lighthouse Job', giver: 'Carmen Sol',
-    brief: 'Grab the cash at Bay Bank, then run to the Lighthouse with 5-star heat on your tail.',
-    target: 'bank', reward: 1000, timeLimit: 0, stages: ['bank', 'lighthouse'], wanted: 5 },
+  {name:'M1 · The Pickup', brief:'Drive to the Harbor dock and pick up Marco\'s package.', target:{x:420,y:420}, kind:'goto',
+   done:'Package secured. Marco is impressed.'},
+  {name:'M2 · Market Run', brief:'Collect 3 supply crates across the Market District.', target:null, kind:'collect', need:3,
+   done:'Crates delivered. The crew trusts you now.'},
+  {name:'M3 · The Getaway', brief:'Lose the cops — drop your wanted level to 0, then reach the Stadium.', target:{x:500,y:1980}, kind:'escape',
+   done:'Clean getaway. You drive like a ghost.'},
+  {name:'M4 · Casino Royale', brief:'Storm the Casino Royale and take down 4 guards. Watch the wanted level!', target:{x:430,y:1135}, kind:'fight', need:4,
+   done:'Vault cracked. SOLMAR BAY IS YOURS.'},
 ];
-
-function defaultState() {
-  return {
-    screen: 'title',        // title | play | paused | busted | wasted | missiondone
-    time: 0,
-    cash: 0,
-    health: 100,
-    wanted: 0,
-    wantedHeat: 0,          // 0..100, drives star changes
-    missionIdx: 0,          // index into MISSIONS, -1 = all done
-    missionStage: 0,
-    missionTimer: 0,
-    missionActive: false,
-    banner: null,           // {text, sub, t}
-    toast: null,
-    player: { x: 600, y: 1900, angle: -Math.PI / 2, speed: 0, inCar: null, ammo: 24, onFoot: true },
-    cars: [], peds: [], police: [], bullets: [], pickups: [],
-    cam: { x: 600, y: 1900 },
-    stats: { carsStolen: 0, missionsDone: 0 },
-    muted: false,
-    demo: null,
-  };
+function setMission(i){
+  G.mission=i; G.missionStep=0;
+  const m=MISSIONS[i];
+  G.missionText=m.name+' — '+m.brief;
+  G.objective = m.target?{x:m.target.x,y:m.target.y}:null;
+  G.missionTimer=0;
+  flash(m.name);
+  if(G.story[i]) flash(G.story[i]);
 }
-let S = defaultState();
+function flash(t){ G.msg=t; G.msgT=6; }
+function addCash(n){ G.cash+=n; G.score+=n; }
+</script>
 
-// ---------------------------------------------------------------- entities
-function spawnCar(type, x, y, angle, opts) {
-  const t = CAR_TYPES[type];
-  const car = {
-    type, x, y, angle: angle || 0, speed: 0, color: t.color,
-    w: t.w, h: t.h, maxSpeed: t.maxSpeed, accel: t.accel, turn: t.turn,
-    traffic: !!(opts && opts.traffic), police: type === 'police',
-    driver: !!(opts && opts.driver), routeAxis: null, routeDir: 1,
-    stuck: 0, despawn: 0,
-  };
-  if (car.traffic) {
-    // Traffic follows a road: pick nearest axis and drive along it.
-    let bestD = 1e9, axis = 'x', line = 0;
-    for (const rx of ROADS_X) { const d = Math.abs(x - rx); if (d < bestD) { bestD = d; axis = 'y'; line = rx; } }
-    for (const ry of ROADS_Y) { const d = Math.abs(y - ry); if (d < bestD) { bestD = d; axis = 'x'; line = ry; } }
-    car.routeAxis = axis; car.routeLine = line;
-    car.routeDir = Math.random() < 0.5 ? 1 : -1;
-    car.angle = axis === 'x' ? (car.routeDir > 0 ? 0 : Math.PI) : (car.routeDir > 0 ? Math.PI / 2 : -Math.PI / 2);
-    car.speed = rand(120, 180);
-    car.x = axis === 'x' ? x : line; car.y = axis === 'x' ? line : y;
+<script>
+"use strict";
+/* ---------- audio: created ONLY on a user gesture ---------- */
+let AC=null, engineOsc=null, engineGain=null;
+function ensureAudio(){
+  if(AC) return;
+  try{
+    AC = new (window.AudioContext||window.webkitAudioContext)();
+    engineOsc = AC.createOscillator(); engineOsc.type='sawtooth'; engineOsc.frequency.value=55;
+    engineGain = AC.createGain(); engineGain.gain.value=0;
+    const lp = AC.createBiquadFilter(); lp.type='lowpass'; lp.frequency.value=420;
+    engineOsc.connect(lp); lp.connect(engineGain); engineGain.connect(AC.destination);
+    engineOsc.start();
+  }catch(e){ AC=null; }
+}
+function beep(freq,dur,type,vol){
+  if(!AC||G.muted) return;
+  try{
+    const o=AC.createOscillator(), g=AC.createGain();
+    o.type=type||'square'; o.frequency.value=freq;
+    g.gain.setValueAtTime(vol||0.08,AC.currentTime);
+    g.gain.exponentialRampToValueAtTime(0.001,AC.currentTime+dur);
+    o.connect(g); g.connect(AC.destination); o.start(); o.stop(AC.currentTime+dur);
+  }catch(e){}
+}
+function noiseBurst(dur,vol){
+  if(!AC||G.muted) return;
+  try{
+    const n=AC.createBufferSource(), buf=AC.createBuffer(1,AC.sampleRate*dur,AC.sampleRate), d=buf.getChannelData(0);
+    for(let i=0;i<d.length;i++) d[i]=(Math.random()*2-1)*(1-i/d.length);
+    n.buffer=buf; const g=AC.createGain(); g.gain.value=vol||0.15;
+    n.connect(g); g.connect(AC.destination); n.start();
+  }catch(e){}
+}
+const sfx = {
+  shoot(){ noiseBurst(0.09,0.18); beep(180,0.08,'square',0.06); },
+  pickup(){ beep(660,0.09,'sine',0.1); setTimeout(()=>beep(990,0.12,'sine',0.1),80); },
+  steal(){ beep(220,0.15,'sawtooth',0.08); },
+  siren(){ beep(740,0.18,'sine',0.05); setTimeout(()=>beep(560,0.18,'sine',0.05),190); },
+  crash(){ noiseBurst(0.2,0.2); },
+  mission(){ [523,659,784].forEach((f,i)=>setTimeout(()=>beep(f,0.16,'triangle',0.1),i*110)); },
+  hurt(){ beep(140,0.2,'sawtooth',0.12); },
+};
+
+/* ---------- input ---------- */
+const KEYMAP={KeyW:'up',ArrowUp:'up',KeyS:'down',ArrowDown:'down',KeyA:'left',ArrowLeft:'left',KeyD:'right',ArrowRight:'right',ShiftLeft:'run',ShiftRight:'run',KeyE:'use',Space:'brake',KeyP:'pause',KeyL:'save',KeyM:'mute'};
+addEventListener('keydown',e=>{
+  ensureAudio();
+  if(e.code==='Space') e.preventDefault();
+  const k=KEYMAP[e.code]; if(k) G.keys[k]=true;
+  if(e.code==='KeyP'&&(G.mode==='play'||G.mode==='pause')) G.mode=G.mode==='play'?'pause':'play';
+  if(e.code==='KeyM') G.muted=!G.muted;
+  if(e.code==='KeyL'&&G.mode==='play') saveGame();
+  if(e.code==='Enter'&&G.mode==='title'){ ensureAudio(); startGame(); }
+  if(e.code==='Enter'&&(G.mode==='dead'||G.mode==='win')) startGame();
+});
+addEventListener('keyup',e=>{ const k=KEYMAP[e.code]; if(k) G.keys[k]=false; });
+cv.addEventListener('mousemove',e=>{ const r=cv.getBoundingClientRect(); G.mouse.x=(e.clientX-r.left)*(W/r.width); G.mouse.y=(e.clientY-r.top)*(H/r.height); });
+cv.addEventListener('mousedown',e=>{ ensureAudio(); G.mouse.down=true; if(G.mode==='title') startGame(); else if(G.mode==='play') shoot(); });
+addEventListener('mouseup',()=>{ G.mouse.down=false; });
+cv.addEventListener('contextmenu',e=>e.preventDefault());
+
+/* ---------- spawning ---------- */
+const CAR_COLORS=['#c0392b','#2980b9','#f1c40f','#ecf0f1','#8e44ad','#e67e22','#16a085','#2c3e50','#d35400','#7f8c8d'];
+function spawnCar(x,y,police){
+  const c={x,y,a:rand(0,TAU),speed:0,police:!!police,col:police?'#1a1a2e':'#000',body:police?'#e8e8e8':CAR_COLORS[irand(0,CAR_COLORS.length-1)],w:46,h:24,driver:true,dead:false};
+  G.cars.push(c); return c;
+}
+function spawnTraffic(n){
+  for(let i=0;i<n;i++){
+    const rx=ROADS_X[irand(0,ROADS_X.length-1)], ry=ROADS_Y[irand(0,ROADS_Y.length-1)];
+    const horiz=Math.random()<0.5;
+    spawnCar(horiz?rand(100,WORLD.w-100):rx, horiz?ry:rand(100,WORLD.h-100));
   }
-  return car;
 }
-function spawnPed(x, y) {
-  return {
-    x, y, angle: rand(0, TAU), speed: rand(28, 46), state: 'walk',
-    fleeT: 0, color: pick(['#e8b4b8', '#a8c8e8', '#e8d8a8', '#b8e8c8', '#d8b8e8', '#e8a878']),
-    shirt: pick(['#c0392b', '#2980b9', '#27ae60', '#8e44ad', '#f39c12', '#16a085']),
-    waitT: rand(0, 3),
-  };
+function spawnPed(x,y){
+  const p={x,y,a:rand(0,TAU),speed:rand(28,55),col:['#e74c3c','#3498db','#2ecc71','#f39c12','#9b59b6','#ecf0f1'][irand(0,5)],t:rand(0,5),panic:0};
+  G.peds.push(p); return p;
 }
-function spawnPickup(kind, x, y) {
-  return { kind, x, y, t: 0 };
+function spawnPeds(n){ for(let i=0;i<n;i++) spawnPed(rand(150,WORLD.w-150),rand(150,WORLD.h-150)); }
+function spawnCop(x,y){
+  const c=spawnCar(x,y,true); c.speed=0; G.cops.push(c); return c;
 }
-function resetWorld(demo) {
-  S.cars = []; S.peds = []; S.police = []; S.bullets = []; S.pickups = [];
-  // Parked cars around the city (stealable).
-  const spots = [
-    ['sedan', 700, 2000], ['taxi', 1000, 1000], ['pickup', 1400, 1800],
-    ['sports', 2200, 600], ['sedan', 1800, 1400], ['taxi', 2600, 1400],
-    ['pickup', 600, 600], ['sedan', 2400, 1800], ['sports', 1200, 600],
-    ['taxi', 2000, 2200], ['sedan', 2600, 1000], ['pickup', 1000, 2200],
+function spawnPickups(){
+  G.pickups=[
+    {x:2450,y:300,kind:'crate',taken:false},{x:2900,y:560,kind:'crate',taken:false},{x:2450,y:620,kind:'crate',taken:false},
+    {x:900,y:300,kind:'health',taken:false},{x:1800,y:1400,kind:'health',taken:false},{x:600,y:2200,kind:'cash',taken:false},
+    {x:2600,y:1900,kind:'cash',taken:false},{x:1500,y:600,kind:'cash',taken:false},
   ];
-  for (const [type, x, y] of spots) S.cars.push(spawnCar(type, x, y, rand(0, TAU)));
-  // Traffic cars on roads.
-  for (let i = 0; i < 14; i++) {
-    const type = pick(['sedan', 'taxi', 'pickup', 'sports']);
-    const rx = pick(ROADS_X), ry = pick(ROADS_Y);
-    S.cars.push(spawnCar(type, Math.random() < 0.5 ? rx : rand(300, 2900), Math.random() < 0.5 ? rand(300, 2100) : ry, 0, { traffic: true, driver: true }));
-  }
-  // Pedestrians on sidewalks (near roads, off the asphalt).
-  for (let i = 0; i < 34; i++) {
-    const rx = pick(ROADS_X), ry = pick(ROADS_Y);
-    const x = clamp(rx + pick([-70, 70]) + rand(-40, 40), 60, WORLD.w - 60);
-    const y = clamp(ry + pick([-70, 70]) + rand(-40, 40), 60, WORLD.h - 60);
-    if (!pointInBuilding(x, y)) S.peds.push(spawnPed(x, y));
-  }
-  // Pickups: ammo crates and health kits.
-  S.pickups.push(spawnPickup('ammo', 800, 1800), spawnPickup('ammo', 2200, 1000),
-    spawnPickup('health', 1200, 1400), spawnPickup('ammo', 1600, 2000),
-    spawnPickup('health', 2600, 600), spawnPickup('ammo', 600, 1000));
-  // Player starts at the safehouse.
-  S.player.x = LANDMARKS.safehouse.x; S.player.y = LANDMARKS.safehouse.y + 40;
-  S.player.angle = -Math.PI / 2; S.player.inCar = null; S.player.ammo = 24;
-  S.cam.x = S.player.x; S.cam.y = S.player.y;
-
-  if (demo === 'drive') {
-    const car = S.cars[0];
-    S.player.inCar = car; car.driver = false; car.traffic = false;
-    S.player.x = car.x; S.player.y = car.y;
-  } else if (demo === 'mission') {
-    startMission(0, true);
-    const car = S.cars[0];
-    S.player.inCar = car; car.driver = false; car.traffic = false;
-  } else if (demo === 'chase') {
-    const car = spawnCar('sports', S.player.x + 60, S.player.y, 0);
-    S.cars.push(car);
-    S.player.inCar = car; car.driver = false;
-    addWanted(3);
-    for (let i = 0; i < 3; i++) spawnPolice();
-  }
 }
-function startMission(idx, silent) {
-  const m = MISSIONS[idx];
-  if (!m) return;
-  S.missionIdx = idx; S.missionActive = true; S.missionStage = 0;
-  S.missionTimer = m.timeLimit || 0;
-  if (m.wanted) addWanted(m.wanted, true);
-  if (!silent) {
-    S.banner = { text: 'MISSION: ' + m.title, sub: m.brief, t: 4.5 };
-    showToast('New mission from ' + m.giver + ' — follow the gold marker');
-  }
+function resetWorld(){
+  G.cars=[]; G.peds=[]; G.cops=[]; G.bullets=[]; G.parts=[];
+  spawnTraffic(16); spawnPeds(26); spawnPickups();
+  G.player.x=1500; G.player.y=1150; G.player.a=-Math.PI/2; G.player.inCar=null; G.player.speed=0;
+  G.cash=120; G.health=100; G.wanted=0; G.wantedHeat=0; G.kills=0; G.carsStolen=0;
+  setMission(0);
 }
-function missionTarget() {
-  const m = MISSIONS[S.missionIdx];
-  if (!m || !S.missionActive) return null;
-  if (m.stages) return LANDMARKS[m.stages[S.missionStage]];
-  return m.target ? LANDMARKS[m.target] : null;
-}
-function completeMission() {
-  const m = MISSIONS[S.missionIdx];
-  if (!m) return;
-  S.cash += m.reward;
-  S.stats.missionsDone++;
-  S.missionActive = false;
-  AudioSys.jingle();
-  S.banner = { text: 'MISSION COMPLETE', sub: m.title + '  ·  +$' + m.reward, t: 4 };
-  saveGame();
-  if (S.missionIdx + 1 < MISSIONS.length) {
-    setTimeout(() => { if (S.screen === 'play') startMission(S.missionIdx + 1); }, 4200);
-  } else {
-    S.missionIdx = -1;
-    setTimeout(() => { if (S.screen === 'play') { S.banner = { text: 'SOLMAR BAY — STORY COMPLETE', sub: 'Carmen Sol owes you one. Free roam continues.', t: 6 }; } }, 4200);
-  }
-}
-function failMission(reason) {
-  S.missionActive = false;
-  S.banner = { text: 'MISSION FAILED', sub: reason, t: 3.5 };
-  AudioSys.busted();
-  setTimeout(() => { if (S.screen === 'play') startMission(S.missionIdx); }, 3600);
-}
-function showToast(text) { S.toast = { text, t: 3 }; }
-function addWanted(n, absolute) {
-  if (absolute) { S.wanted = clamp(n, 0, 5); S.wantedHeat = S.wanted * 20; return; }
-  // Each crime adds 20 heat: 1 crime = 1 star, 3 crimes = 3 stars, 5 = max.
-  S.wantedHeat = clamp(S.wantedHeat + n * 20, 0, 100);
-  const stars = S.wantedHeat <= 4 ? 0 : S.wantedHeat <= 24 ? 1 : S.wantedHeat <= 44 ? 2 : S.wantedHeat <= 64 ? 3 : S.wantedHeat <= 84 ? 4 : 5;
-  if (stars > S.wanted) showToast(stars >= 3 ? 'The bay police are on you!' : 'Wanted level up — lay low');
-  S.wanted = stars;
-}
-function spawnPolice() {
-  const p = S.player;
-  const a = rand(0, TAU);
-  const x = clamp(p.x + Math.cos(a) * rand(500, 700), 60, WORLD.w - 60);
-  const y = clamp(p.y + Math.sin(a) * rand(500, 700), 60, WORLD.h - 60);
-  const snap = nearestRoadPoint(x, y);
-  const car = spawnCar('police', snap.x, snap.y, 0);
-  car.police = true;
-  S.police.push(car);
-  S.cars.push(car);
-}
-function saveGame() {
-  try {
-    const data = {
-      cash: S.cash, missionIdx: S.missionIdx < 0 ? MISSIONS.length : S.missionIdx,
-      stats: S.stats, x: S.player.x, y: S.player.y, health: S.health,
-    };
-    localStorage.setItem(SAVE_KEY, JSON.stringify(data));
-  } catch (e) { /* storage unavailable */ }
-}
-function loadSave() {
-  try {
-    const raw = localStorage.getItem(SAVE_KEY);
-    return raw ? JSON.parse(raw) : null;
-  } catch (e) { return null; }
-}
-function applySave(data) {
-  S.cash = data.cash || 0;
-  S.stats = data.stats || S.stats;
-  S.health = data.health || 100;
-  S.player.x = data.x || LANDMARKS.safehouse.x;
-  S.player.y = data.y || LANDMARKS.safehouse.y;
-  const next = Math.min(data.missionIdx || 0, MISSIONS.length - 1);
-  S.missionIdx = next;
-  startMission(next, true);
+function startGame(){
+  resetWorld();
+  G.mode='play'; G.time=0;
+  flash('Welcome to Solmar Bay — find Marco\'s package at the Harbor.');
 }
 
-// ---------------------------------------------------------------- update
-function update(dt) {
-  S.time += dt;
-  if (S.banner) { S.banner.t -= dt; if (S.banner.t <= 0) S.banner = null; }
-  if (S.toast) { S.toast.t -= dt; if (S.toast.t <= 0) S.toast = null; }
-  if (S.screen !== 'play') return;
+/* ---------- wanted / police ---------- */
+function raiseWanted(n){
+  G.wanted=clamp(G.wanted+n,0,5); G.wantedHeat=100;
+  if(G.wanted>=1&&G.cops.length<G.wanted+1){
+    for(let i=0;i<2;i++) spawnCop(G.player.x+rand(-500,500),G.player.y+rand(-500,500));
+    sfx.siren();
+  }
+}
+function updateWanted(dt){
+  if(G.wanted>0){
+    const seen = G.cops.some(c=>dist(c.x,c.y,G.player.x,G.player.y)<420);
+    if(!seen){ G.wantedHeat-=dt*6; if(G.wantedHeat<=0){ G.wanted--; G.wantedHeat= G.wanted>0?60:0; flash(G.wanted>0?'Heat cooling off…':'You lost the cops. Clean.'); } }
+    else G.wantedHeat=100;
+  }
+}
 
-  const p = S.player;
-  const up = keys['w'] || keys['arrowup'];
-  const down = keys['s'] || keys['arrowdown'];
-  const left = keys['a'] || keys['arrowleft'];
-  const right = keys['d'] || keys['arrowright'];
-  const run = keys['shift'];
+/* ---------- combat ---------- */
+function shoot(){
+  if(!AC) ensureAudio();
+  const p=G.player;
+  const sx=p.x, sy=p.y;
+  const wx=G.cam.x+(G.mouse.x-W/2), wy=G.cam.y+(G.mouse.y-H/2);
+  const a=Math.atan2(wy-sy,wx-sx);
+  G.bullets.push({x:sx+Math.cos(a)*22,y:sy+Math.sin(a)*22,vx:Math.cos(a)*620,vy:Math.sin(a)*620,life:0.7,from:'player'});
+  sfx.shoot();
+  if(G.wanted<1) raiseWanted(1);
+}
+function updateBullets(dt){
+  for(const b of G.bullets){
+    b.x+=b.vx*dt; b.y+=b.vy*dt; b.life-=dt;
+    if(hitBuilding(b.x,b.y,2)) b.life=0;
+    // hit cops
+    for(const c of G.cops){
+      if(!c.dead&&dist(b.x,b.y,c.x,c.y)<26){ b.life=0; c.dead=true; G.kills++; addCash(25); burst(c.x,c.y,'#ffdd55'); raiseWanted(1); flash('Cop down. +$25'); break; }
+    }
+    // hit mission guards
+    for(const g of G.guards||[]){
+      if(!g.dead&&dist(b.x,b.y,g.x,g.y)<20){ b.life=0; g.hp-=34; if(g.hp<=0){ g.dead=true; G.kills++; addCash(50); burst(g.x,g.y,'#ff5555'); checkMission(); } break; }
+    }
+  }
+  G.bullets=G.bullets.filter(b=>b.life>0);
+}
+function burst(x,y,col){ for(let i=0;i<14;i++) G.parts.push({x,y,vx:rand(-160,160),vy:rand(-160,160),life:rand(0.3,0.7),col}); }
+</script>
 
-  // --- pause / save / mute
-  if (justPressed['p'] || justPressed['escape']) { S.screen = 'paused'; return; }
-  if (justPressed['l']) { saveGame(); showToast('Game saved'); }
-  if (justPressed['m']) { S.muted = !S.muted; AudioSys.setMuted(S.muted); showToast(S.muted ? 'Muted' : 'Sound on'); }
+<script>
+"use strict";
+/* ---------- player movement ---------- */
+function tryMove(x,y,r){
+  // axis-separated so the player slides along walls
+  if(!solidAt(x,G.player.y,r)) G.player.x=x;
+  if(!solidAt(G.player.x,y,r)) G.player.y=y;
+}
+function updatePlayer(dt){
+  const p=G.player, k=G.keys;
+  if(p.inCar){ updateDriving(dt); return; }
+  const run=k.run?1.7:1;
+  let mx=(k.right?1:0)-(k.left?1:0), my=(k.down?1:0)-(k.up?1:0);
+  if(mx||my){
+    const l=Math.hypot(mx,my); mx/=l; my/=l;
+    const sp=190*run;
+    tryMove(p.x+mx*sp*dt, p.y+my*sp*dt, 13);
+    p.a=Math.atan2(my,mx); p.walk+=dt*10;
+  } else p.walk=0;
+  if(k.use){ k.use=false; tryEnterCar(); }
+  // pickups
+  for(const pk of G.pickups){
+    if(!pk.taken&&dist(p.x,p.y,pk.x,pk.y)<30){
+      pk.taken=true; sfx.pickup();
+      if(pk.kind==='health'){ G.health=Math.min(100,G.health+40); flash('Health +40'); }
+      else if(pk.kind==='cash'){ addCash(80); flash('Found $80 cash!'); }
+      else if(pk.kind==='crate'){ G.missionStep++; flash('Crate '+G.missionStep+'/3 collected'); checkMission(); }
+    }
+  }
+}
+function nearestCar(maxD){
+  let best=null,bd=maxD;
+  for(const c of G.cars){ if(c.dead) continue; const d=dist(G.player.x,G.player.y,c.x,c.y); if(d<bd){bd=d;best=c;} }
+  return best;
+}
+function tryEnterCar(){
+  const c=nearestCar(70);
+  if(!c) return;
+  G.player.inCar=c; c.speed=0;
+  if(!c.police&&c.driver){ c.driver=false; G.carsStolen++; raiseWanted(1); flash('Car stolen! The owner ran off. Wanted +1'); sfx.steal(); }
+  else flash(c.police?'You jacked a cop car?!':'In the car — drive!');
+}
+function updateDriving(dt){
+  const p=G.player, c=p.inCar, k=G.keys;
+  if(!c){ p.inCar=null; return; }
+  const accel=k.up?1:0, rev=k.down?1:0;
+  const top=460;
+  if(accel) c.speed+=420*dt;
+  else if(rev) c.speed-=300*dt;
+  else c.speed*=Math.pow(0.4,dt);
+  if(k.brake) c.speed*=Math.pow(0.02,dt);
+  c.speed=clamp(c.speed,-160,top);
+  const steer=((k.left?1:0)-(k.right?1:0))*(c.speed>=0?1:-1);
+  c.a+=steer*1.9*dt*Math.min(1,Math.abs(c.speed)/140);
+  const nx=c.x+Math.cos(c.a)*c.speed*dt, ny=c.y+Math.sin(c.a)*c.speed*dt;
+  if(solidAt(nx,ny,24)){ c.speed*=-0.35; sfx.crash(); G.shake=6; }
+  else { c.x=nx; c.y=ny; }
+  p.x=c.x; p.y=c.y; p.a=c.a;
+  // run over peds (raises wanted) — classic, keep it rare & costly
+  for(const pd of G.peds){
+    if(dist(pd.x,pd.y,c.x,c.y)<26&&Math.abs(c.speed)>120){
+      pd.x=-9999; burst(pd.x,pd.y,'#ff5555'); raiseWanted(1); flash('You hit a pedestrian! Wanted +1');
+    }
+  }
+  if(k.use){ k.use=false; p.inCar=null; p.x=c.x+Math.cos(c.a+Math.PI/2)*34; p.y=c.y+Math.sin(c.a+Math.PI/2)*34; }
+  if(engineGain) engineGain.gain.value=0.02+Math.abs(c.speed)/460*0.05;
+  if(engineOsc) engineOsc.frequency.value=55+Math.abs(c.speed)*0.22;
+}
 
-  // --- enter / exit car
-  if (justPressed['e']) {
-    if (p.inCar) {
-      const car = p.inCar;
-      p.inCar = null;
-      p.x = car.x + Math.cos(car.angle + Math.PI / 2) * 40;
-      p.y = car.y + Math.sin(car.angle + Math.PI / 2) * 40;
-      car.speed = 0;
-      if (car.police) { /* abandoning a cruiser is fine */ }
+/* ---------- traffic & pedestrians ---------- */
+function updateTraffic(dt){
+  for(const c of G.cars){
+    if(c.dead) continue;
+    if(c===G.player.inCar) continue;
+    if(c.police) continue;
+    // cruise along roads: pick nearest road axis and drive
+    const onX=ROADS_X.reduce((a,b)=>Math.abs(c.x-b)<Math.abs(c.x-a)?b:a);
+    const onY=ROADS_Y.reduce((a,b)=>Math.abs(c.y-b)<Math.abs(c.y-a)?b:a);
+    const targetA = Math.abs(c.x-onX)<Math.abs(c.y-onY) ? (c.y<onY?Math.PI/2:-Math.PI/2) : (c.x<onX?0:Math.PI);
+    c.a=angLerp(c.a,targetA,dt*1.2);
+    c.speed=angLerp(c.speed,95,dt*0.8);
+    const nx=c.x+Math.cos(c.a)*c.speed*dt, ny=c.y+Math.sin(c.a)*c.speed*dt;
+    if(!solidAt(nx,ny,24)){ c.x=nx; c.y=ny; }
+    else c.a+=Math.PI/2;
+    // keep traffic on roads: respawn wanderers
+    if(!onRoad(c.x,c.y)&&Math.random()<dt*0.05){ c.x=ROADS_X[irand(0,ROADS_X.length-1)]; c.y=ROADS_Y[irand(0,ROADS_Y.length-1)]; }
+  }
+  for(const pd of G.peds){
+    if(pd.x<-100) continue;
+    pd.t-=dt;
+    if(pd.t<=0){ pd.a=rand(0,TAU); pd.t=rand(2,6); }
+    if(pd.panic>0){ pd.panic-=dt; pd.speed=150; } else pd.speed=42;
+    const nx=pd.x+Math.cos(pd.a)*pd.speed*dt, ny=pd.y+Math.sin(pd.a)*pd.speed*dt;
+    if(!solidAt(nx,ny,10)&&!onRoad(nx,ny)||pd.panic>0){ pd.x=nx; pd.y=ny; }
+    else pd.a+=Math.PI/2;
+    if(dist(pd.x,pd.y,G.player.x,G.player.y)<90&&G.wanted>0) pd.panic=2;
+  }
+}
+
+/* ---------- police AI ---------- */
+function updateCops(dt){
+  for(const c of G.cops){
+    if(c.dead) continue;
+    const p=G.player;
+    const d=dist(c.x,c.y,p.x,p.y);
+    if(G.wanted<=0){ // patrol away
+      c.speed=angLerp(c.speed,80,dt); c.a=angLerp(c.a,Math.atan2(p.y-c.y,p.x-c.x)+Math.PI,dt*0.5);
     } else {
-      let best = null, bd = 70;
-      for (const c of S.cars) {
-        if (c.police) continue;
-        const d = dist(p.x, p.y, c.x, c.y);
-        if (d < bd) { bd = d; best = c; }
+      const ta=Math.atan2(p.y-c.y,p.x-c.x);
+      c.a=angLerp(c.a,ta,dt*2.2);
+      c.speed=angLerp(c.speed,Math.min(500,330+G.wanted*35),dt*1.5);
+      if(d<40){ // ram the player
+        if(p.inCar){ p.inCar.speed*=0.55; G.shake=8; sfx.crash(); }
+        else { G.health-=22*dt*3; sfx.hurt(); }
       }
-      if (best) {
-        const wasParked = !best.traffic && !best.driver;
-        p.inCar = best; best.traffic = false; best.driver = false;
-        p.x = best.x; p.y = best.y;
-        if (wasParked) {
-          S.stats.carsStolen++;
-          addWanted(1);
-          showToast('You jacked a ' + CAR_TYPES[best.type].name + ' — the law noticed');
-          AudioSys.blip(330, 0.15, 'square', 0.15);
-        }
-      }
+      if(Math.random()<dt*0.25) sfx.siren();
+    }
+    const nx=c.x+Math.cos(c.a)*c.speed*dt, ny=c.y+Math.sin(c.a)*c.speed*dt;
+    if(!solidAt(nx,ny,24)){ c.x=nx; c.y=ny; } else { c.speed*=0.5; c.a+=0.6; }
+    // shooting at high wanted
+    if(G.wanted>=3&&d<380&&Math.random()<dt*0.6){
+      const a=Math.atan2(p.y-c.y,p.x-c.x)+rand(-0.12,0.12);
+      G.bullets.push({x:c.x,y:c.y,vx:Math.cos(a)*520,vy:Math.sin(a)*520,life:0.8,from:'cop'});
     }
   }
-
-  // --- shooting
-  const wantShoot = justPressed['f'] || justPressed['mouse'];
-  if (wantShoot && !p.inCar) {
-    if (p.ammo > 0) {
-      p.ammo--;
-      const aim = Math.atan2(mouse.y - canvas.height / 2, mouse.x - canvas.width / 2);
-      // Aim from player toward the mouse (screen space == world direction here).
-      const a = Math.atan2((mouse.y + S.cam.y - canvas.height / 2) - p.y, (mouse.x + S.cam.x - canvas.width / 2) - p.x);
-      S.bullets.push({ x: p.x + Math.cos(a) * 18, y: p.y + Math.sin(a) * 18, vx: Math.cos(a) * 620, vy: Math.sin(a) * 620, life: 0.7, fromPlayer: true });
-      AudioSys.shot();
-      addWanted(1);
-    } else {
-      showToast('Out of ammo — find an ammo crate');
-      AudioSys.blip(180, 0.15, 'square', 0.12);
-    }
+  // cop bullets hurt the player
+  for(const b of G.bullets){
+    if(b.from==='cop'&&dist(b.x,b.y,G.player.x,G.player.y)<16){ b.life=0; G.health-=8; sfx.hurt(); G.shake=4; }
   }
-
-  // --- movement
-  if (p.inCar) {
-    const car = p.inCar;
-    const t = CAR_TYPES[car.type];
-    const fwd = (up ? 1 : 0) - (down ? 0.55 : 0);
-    if (fwd !== 0) car.speed += fwd * car.accel * dt;
-    else car.speed *= Math.pow(0.4, dt);           // drag
-    if (keys[' ']) car.speed *= Math.pow(0.05, dt); // handbrake
-    car.speed = clamp(car.speed, -car.maxSpeed * 0.45, car.maxSpeed);
-    const steer = (left ? -1 : 0) + (right ? 1 : 0);
-    if (Math.abs(car.speed) > 12) car.angle += steer * car.turn * dt * Math.sign(car.speed) * clamp(Math.abs(car.speed) / 120, 0.3, 1);
-    car.x += Math.cos(car.angle) * car.speed * dt;
-    car.y += Math.sin(car.angle) * car.speed * dt;
-    const fixed = collideBuildings(car.x, car.y, 20);
-    if (fixed.x !== car.x || fixed.y !== car.y) { car.speed *= 0.4; if (Math.abs(car.speed) > 150) AudioSys.crash(); }
-    car.x = fixed.x; car.y = fixed.y;
-    car.x = clamp(car.x, 30, WORLD.w - 30); car.y = clamp(car.y, 30, WORLD.h - 30);
-    p.x = car.x; p.y = car.y; p.angle = car.angle;
-    // Hitting pedestrians while driving.
-    for (const ped of S.peds) {
-      if (Math.abs(car.speed) > 60 && dist(car.x, car.y, ped.x, ped.y) < 26) {
-        ped.state = 'flee'; ped.fleeT = 3;
-        ped.x += Math.cos(car.angle + Math.PI / 2) * 30; ped.y += Math.sin(car.angle + Math.PI / 2) * 30;
-        addWanted(1);
-        AudioSys.crash();
-      }
-    }
-    // Ramming police / traffic.
-    for (const c of S.cars) {
-      if (c === car) continue;
-      if (dist(car.x, car.y, c.x, c.y) < 34 && Math.abs(car.speed) > 120) {
-        c.speed = car.speed * 0.4; c.x += Math.cos(car.angle) * 20; c.y += Math.sin(car.angle) * 20;
-        car.speed *= 0.6; AudioSys.crash();
-        if (c.police) addWanted(1);
-      }
-    }
-  } else {
-    const spd = run ? 240 : 150;
-    let mx = (right ? 1 : 0) - (left ? 1 : 0);
-    let my = (down ? 1 : 0) - (up ? 1 : 0);
-    if (mx || my) {
-      const len = Math.hypot(mx, my); mx /= len; my /= len;
-      p.x += mx * spd * dt; p.y += my * spd * dt;
-      p.angle = Math.atan2(my, mx);
-    }
-    const fixed = collideBuildings(p.x, p.y, 12);
-    p.x = fixed.x; p.y = fixed.y;
-    p.x = clamp(p.x, 30, WORLD.w - 30); p.y = clamp(p.y, 30, WORLD.h - 30);
-  }
-
-  // --- bullets
-  for (let i = S.bullets.length - 1; i >= 0; i--) {
-    const b = S.bullets[i];
-    b.x += b.vx * dt; b.y += b.vy * dt; b.life -= dt;
-    if (b.life <= 0 || b.x < 0 || b.y < 0 || b.x > WORLD.w || b.y > WORLD.h) { S.bullets.splice(i, 1); continue; }
-    const hit = pointInBuilding(b.x, b.y);
-    if (hit) { S.bullets.splice(i, 1); continue; }
-    let consumed = false;
-    for (const ped of S.peds) {
-      if (dist(b.x, b.y, ped.x, ped.y) < 14) {
-        ped.state = 'flee'; ped.fleeT = 4;
-        ped.x += Math.cos(b.vx > 0 ? 0 : Math.PI) * 24;
-        addWanted(1);
-        S.bullets.splice(i, 1); consumed = true; break;
-      }
-    }
-    if (consumed) continue;
-    for (const c of S.cars) {
-      if (b.fromPlayer && c === p.inCar) continue;
-      if (dist(b.x, b.y, c.x, c.y) < 24) {
-        if (c.police) addWanted(1);
-        S.bullets.splice(i, 1); break;
-      }
-    }
-  }
-
-  // --- traffic cars
-  for (const c of S.cars) {
-    if (!c.traffic || c === p.inCar) continue;
-    // Drive along its road axis; turn at intersections occasionally.
-    const step = c.speed * dt * c.routeDir;
-    if (c.routeAxis === 'x') {
-      c.x += step;
-      if (c.x < 120 || c.x > WORLD.w - 120) { c.routeDir *= -1; c.angle += Math.PI; }
-      if (Math.random() < dt * 0.08) { // turn onto a cross street
-        const ry = pick(ROADS_Y);
-        c.y = ry; c.routeAxis = 'y'; c.routeLine = ry; c.angle = c.routeDir > 0 ? Math.PI / 2 : -Math.PI / 2;
-      }
-    } else {
-      c.y += step;
-      if (c.y < 120 || c.y > WORLD.h - 120) { c.routeDir *= -1; c.angle += Math.PI; }
-      if (Math.random() < dt * 0.08) {
-        const rx = pick(ROADS_X);
-        c.x = rx; c.routeAxis = 'x'; c.routeLine = rx; c.angle = c.routeDir > 0 ? 0 : Math.PI;
-      }
-    }
-    // Avoid piling into the player car.
-    if (p.inCar && dist(c.x, c.y, p.inCar.x, p.inCar.y) < 50) { c.speed = 40; } else { c.speed = lerp(c.speed, rand(120, 180), dt * 0.2); }
-    // Keep traffic off buildings (roads only).
-    if (!onRoad(c.x, c.y)) { const s = nearestRoadPoint(c.x, c.y); c.x = s.x; c.y = s.y; }
-  }
-
-  // --- pedestrians
-  for (const ped of S.peds) {
-    if (ped.state === 'flee') {
-      ped.fleeT -= dt;
-      const a = angTo(p.x, p.y, ped.x, ped.y);
-      ped.x += Math.cos(a) * 130 * dt; ped.y += Math.sin(a) * 130 * dt;
-      if (ped.fleeT <= 0) ped.state = 'walk';
-    } else {
-      ped.waitT -= dt;
-      if (ped.waitT <= 0) {
-        ped.angle = rand(0, TAU);
-        ped.waitT = rand(1, 4);
-      }
-      const nx = ped.x + Math.cos(ped.angle) * ped.speed * dt;
-      const ny = ped.y + Math.sin(ped.angle) * ped.speed * dt;
-      if (!pointInBuilding(nx, ny) && nx > 40 && nx < WORLD.w - 40 && ny > 40 && ny < WORLD.h - 40) {
-        ped.x = nx; ped.y = ny;
-      } else { ped.angle = rand(0, TAU); }
-      // Scared by nearby gunfire / speeding player car.
-      const pd = dist(ped.x, ped.y, p.x, p.y);
-      if (pd < 90 && (S.bullets.length > 0 || (p.inCar && Math.abs(p.inCar.speed) > 200))) {
-        ped.state = 'flee'; ped.fleeT = 2.5;
-      }
-    }
-    ped.x = clamp(ped.x, 30, WORLD.w - 30); ped.y = clamp(ped.y, 30, WORLD.h - 30);
-  }
-
-  // --- wanted decay + police
-  const seenByPolice = S.police.some(c => dist(c.x, c.y, p.x, p.y) < 420);
-  if (S.wanted > 0) {
-    if (!seenByPolice && !p.inCar) S.wantedHeat -= 6 * dt;
-    else if (!seenByPolice) S.wantedHeat -= 3.5 * dt;
-    if (S.wantedHeat <= 0) { S.wanted = 0; S.wantedHeat = 0; showToast('You lost them — heat is off'); }
-    else {
-      const stars = S.wantedHeat <= 24 ? 1 : S.wantedHeat <= 44 ? 2 : S.wantedHeat <= 64 ? 3 : S.wantedHeat <= 84 ? 4 : 5;
-      S.wanted = stars;
-    }
-  }
-  // Police count follows wanted level.
-  const wantCruisers = S.wanted === 0 ? 0 : S.wanted >= 5 ? 5 : S.wanted >= 3 ? 3 : S.wanted >= 2 ? 2 : 1;
-  while (S.police.length < wantCruisers) spawnPolice();
-  // Police chase / ram.
-  for (let i = S.police.length - 1; i >= 0; i--) {
-    const c = S.police[i];
-    if (S.wanted === 0) { // cruisers give up and drive off
-      c.speed = lerp(c.speed, 200, dt);
-      c.angle += 0.4 * dt;
-      c.x += Math.cos(c.angle) * c.speed * dt; c.y += Math.sin(c.angle) * c.speed * dt;
-      if (dist(c.x, c.y, p.x, p.y) > 900) { S.police.splice(i, 1); S.cars.splice(S.cars.indexOf(c), 1); }
-      continue;
-    }
-    const targetA = angTo(c.x, c.y, p.x, p.y);
-    const d = angDiff(c.angle, targetA);
-    c.angle += clamp(d, -3.2 * dt, 3.2 * dt);
-    const distP = dist(c.x, c.y, p.x, p.y);
-    const targetSpeed = distP > 260 ? c.maxSpeed : c.maxSpeed * 0.85;
-    c.speed = lerp(c.speed, targetSpeed, dt * 0.8);
-    c.x += Math.cos(c.angle) * c.speed * dt;
-    c.y += Math.sin(c.angle) * c.speed * dt;
-    const fixed = collideBuildings(c.x, c.y, 20);
-    c.x = fixed.x; c.y = fixed.y;
-    // Ram the player.
-    if (distP < 40) {
-      if (p.inCar) {
-        p.inCar.speed *= 0.55;
-        c.speed *= 0.5;
-        S.health = Math.max(0, S.health - 6 * dt * 10);
-      } else {
-        S.health = Math.max(0, S.health - 25 * dt);
-        p.x += Math.cos(targetA) * 60 * dt; p.y += Math.sin(targetA) * 60 * dt;
-      }
-      if (Math.random() < dt * 2) AudioSys.crash();
-    }
-    // Police shoot at the player on foot at higher wanted levels.
-    if (S.wanted >= 3 && !p.inCar && distP < 320 && Math.random() < dt * 0.5) {
-      const a = angTo(c.x, c.y, p.x, p.y) + rand(-0.15, 0.15);
-      S.bullets.push({ x: c.x, y: c.y, vx: Math.cos(a) * 520, vy: Math.sin(a) * 520, life: 0.8, fromPlayer: false });
-      AudioSys.shot();
-    }
-  }
-  // Police bullets can hurt the player.
-  for (let i = S.bullets.length - 1; i >= 0; i--) {
-    const b = S.bullets[i];
-    if (!b.fromPlayer && dist(b.x, b.y, p.x, p.y) < 14) {
-      S.health = Math.max(0, S.health - 8);
-      S.bullets.splice(i, 1);
-    }
-  }
-
-  // --- pickups
-  for (let i = S.pickups.length - 1; i >= 0; i--) {
-    const pk = S.pickups[i];
-    pk.t += dt;
-    if (dist(p.x, p.y, pk.x, pk.y) < 30) {
-      if (pk.kind === 'ammo') { p.ammo += 24; showToast('+24 ammo'); }
-      else { S.health = Math.min(100, S.health + 40); showToast('+40 health'); }
-      AudioSys.pickup();
-      S.pickups.splice(i, 1);
-    }
-  }
-
-  // --- health / busted / wasted
-  if (S.health <= 0) {
-    if (S.wanted > 0) {
-      S.screen = 'busted';
-      S.banner = { text: 'BUSTED', sub: 'The bay police took you in. You wake up at the safehouse.', t: 4 };
-    } else {
-      S.screen = 'wasted';
-      S.banner = { text: 'WASTED', sub: 'You wake up at the safehouse, patched up.', t: 4 };
-    }
-    AudioSys.busted();
-    return;
-  }
-  if (S.health < 100 && S.wanted === 0 && !p.inCar) S.health = Math.min(100, S.health + 1.2 * dt);
-
-  // --- missions
-  if (S.missionActive) {
-    const m = MISSIONS[S.missionIdx];
-    if (m.timeLimit > 0) {
-      S.missionTimer -= dt;
-      if (S.missionTimer <= 0) { failMission('Out of time — Carmen is not pleased.'); return; }
-    }
-    const target = missionTarget();
-    if (target) {
-      const d = dist(p.x, p.y, target.x, target.y);
-      if (d < target.r) {
-        if (m.stages && S.missionStage === 0 && m.id === 4) {
-          // Stage 1: grabbed the cash at the bank — now run to the lighthouse.
-          S.missionStage = 1;
-          S.cash += 250;
-          showToast('Cash grabbed (+$250) — now run to the Lighthouse!');
-          addWanted(5, true);
-          AudioSys.jingle();
-        } else {
-          completeMission();
-        }
-      }
-    } else if (m.id === 3) {
-      // Heat Wave: win by losing the wanted level.
-      if (S.wanted === 0) completeMission();
-    }
-  }
-
-  // --- camera + audio
-  S.cam.x = lerp(S.cam.x, p.x, 1 - Math.pow(0.001, dt));
-  S.cam.y = lerp(S.cam.y, p.y, 1 - Math.pow(0.001, dt));
-  const speedNorm = p.inCar ? Math.abs(p.inCar.speed) / p.inCar.maxSpeed : 0;
-  AudioSys.update(speedNorm, S.wanted);
-  justPressed = {};
+  G.cops=G.cops.filter(c=>!c.dead||dist(c.x,c.y,G.player.x,G.player.y)<1200);
 }
 
-// ---------------------------------------------------------------- render
-function drawWorld() {
-  const camX = S.cam.x - canvas.width / 2, camY = S.cam.y - canvas.height / 2;
-  ctx.save();
-  ctx.translate(-camX, -camY);
-
-  // Ground: grass base.
-  ctx.fillStyle = '#2e6b34';
-  ctx.fillRect(camX - 20, camY - 20, canvas.width + 40, canvas.height + 40);
-
-  // Beach (south-west corner sand) and water at the marina edge.
-  ctx.fillStyle = '#d9c27a';
-  ctx.fillRect(0, 0, 700, 700);
-  ctx.fillStyle = '#2a7fa8';
-  ctx.fillRect(2880, 0, 320, 560);           // marina water
-  ctx.fillRect(2880, 1880, 320, 520);        // docks water
-  ctx.fillStyle = '#d9c27a';
-  ctx.fillRect(2840, 0, 40, 560);
-  ctx.fillRect(2840, 1880, 40, 520);
-
-  // Blocks: sidewalk grey.
-  ctx.fillStyle = '#8a8f96';
-  for (let bx = 0; bx < 8; bx++) {
-    for (let by = 0; by < 6; by++) {
-      const x = 200 + bx * BLOCK + ROAD_W / 2, y = 200 + by * BLOCK + ROAD_W / 2;
-      ctx.fillRect(x, y, BLOCK - ROAD_W, BLOCK - ROAD_W);
+/* ---------- missions ---------- */
+function checkMission(){
+  const m=MISSIONS[G.mission];
+  if(!m) return;
+  if(m.kind==='goto'&&G.objective&&dist(G.player.x,G.player.y,G.objective.x,G.objective.y)<60) return completeMission();
+  if(m.kind==='collect'&&G.missionStep>=m.need) return completeMission();
+  if(m.kind==='escape'&&G.wanted===0&&G.objective&&dist(G.player.x,G.player.y,G.objective.x,G.objective.y)<80) return completeMission();
+  if(m.kind==='fight'&&(G.guards||[]).filter(g=>!g.dead).length===0&&(G.guards||[]).length>=m.need) return completeMission();
+}
+function completeMission(){
+  const m=MISSIONS[G.mission];
+  addCash(300+G.mission*200); sfx.mission();
+  flash(m.done+' +$'+(300+G.mission*200));
+  if(G.mission>=MISSIONS.length-1){ G.mode='win'; return; }
+  const next=G.mission+1;
+  if(next===3){ // casino guards spawn
+    G.guards=[];
+    for(let i=0;i<4;i++) G.guards.push({x:430+rand(-90,90),y:1135+rand(-60,60),hp:100,dead:false,a:0,t:rand(0,2)});
+  }
+  setMission(next);
+}
+function updateGuards(dt){
+  for(const g of G.guards||[]){
+    if(g.dead) continue;
+    g.t-=dt;
+    const d=dist(g.x,g.y,G.player.x,G.player.y);
+    if(d<420){
+      g.a=Math.atan2(G.player.y-g.y,G.player.x-g.x);
+      if(g.t<=0){ g.t=rand(0.9,1.6);
+        G.bullets.push({x:g.x,y:g.y,vx:Math.cos(g.a)*480,vy:Math.sin(g.a)*480,life:0.8,from:'cop'}); }
+      if(d>180){ g.x+=Math.cos(g.a)*70*dt; g.y+=Math.sin(g.a)*70*dt; }
     }
   }
-  // Roads: asphalt with centre dashes.
-  ctx.fillStyle = '#3a3f46';
-  for (const rx of ROADS_X) ctx.fillRect(rx - ROAD_W / 2, 0, ROAD_W, WORLD.h);
-  for (const ry of ROADS_Y) ctx.fillRect(0, ry - ROAD_W / 2, WORLD.w, ROAD_W);
-  ctx.strokeStyle = '#e8d24a'; ctx.lineWidth = 3; ctx.setLineDash([26, 22]);
+}
+
+/* ---------- save / load ---------- */
+function saveGame(){
+  try{
+    localStorage.setItem(SAVE_KEY,JSON.stringify({x:G.player.x,y:G.player.y,cash:G.cash,health:G.health,mission:G.mission,step:G.missionStep,kills:G.kills,stolen:G.carsStolen,score:G.score}));
+    G.saveFlash=2; flash('Game saved.'); sfx.pickup();
+  }catch(e){ flash('Save failed (storage blocked).'); }
+}
+function loadSave(){
+  try{ const s=JSON.parse(localStorage.getItem(SAVE_KEY)||'null'); return s; }catch(e){ return null; }
+}
+</script>
+
+<script>
+"use strict";
+/* ---------- rendering ---------- */
+function drawWorld(){
+  const cam=G.cam;
+  const x0=cam.x-W/2, y0=cam.y-H/2;
+  // ground: district tinted grass/asphalt base
+  ctx.fillStyle='#2c3e2f'; ctx.fillRect(0,0,W,H);
+  for(const d of DISTRICTS){
+    ctx.fillStyle=d.col;
+    ctx.globalAlpha=0.35;
+    ctx.fillRect(d.x-x0,d.y-y0,d.w,d.h);
+    ctx.globalAlpha=1;
+    ctx.fillStyle=d.label; ctx.font='bold 26px Arial'; ctx.textAlign='left';
+    ctx.globalAlpha=0.5; ctx.fillText(d.name.toUpperCase(),d.x-x0+18,d.y-y0+40); ctx.globalAlpha=1;
+  }
+  // roads
+  ctx.fillStyle='#33363d';
+  for(const rx of ROADS_X) ctx.fillRect(rx-ROAD/2-x0,0,ROAD,H);
+  for(const ry of ROADS_Y) ctx.fillRect(0,ry-ROAD/2-y0,W,ROAD);
+  // road markings
+  ctx.strokeStyle='#d8b93c'; ctx.lineWidth=3; ctx.setLineDash([26,30]);
   ctx.beginPath();
-  for (const rx of ROADS_X) { ctx.moveTo(rx, 0); ctx.lineTo(rx, WORLD.h); }
-  for (const ry of ROADS_Y) { ctx.moveTo(0, ry); ctx.lineTo(WORLD.w, ry); }
-  ctx.stroke();
-  ctx.setLineDash([]);
-
-  // Palm trees on blocks (deterministic scatter).
-  for (let bx = 0; bx < 8; bx++) for (let by = 0; by < 6; by++) {
-    for (let i = 0; i < 3; i++) {
-      const h = hash2(bx * 11 + i, by * 13 + 2);
-      if (h < 0.45) continue;
-      const x = 200 + bx * BLOCK + ROAD_W / 2 + 20 + h * (BLOCK - ROAD_W - 40);
-      const y = 200 + by * BLOCK + ROAD_W / 2 + 20 + hash2(bx, by * 5 + i) * (BLOCK - ROAD_W - 40);
-      if (pointInBuilding(x, y)) continue;
-      drawPalm(x, y);
-    }
+  for(const rx of ROADS_X){ ctx.moveTo(rx-x0,0); ctx.lineTo(rx-x0,H); }
+  for(const ry of ROADS_Y){ ctx.moveTo(0,ry-y0); ctx.lineTo(W,ry-y0); }
+  ctx.stroke(); ctx.setLineDash([]);
+  // sidewalks
+  ctx.strokeStyle='#8a8f96'; ctx.lineWidth=4;
+  for(const rx of ROADS_X){ ctx.strokeRect(rx-ROAD/2-4-x0,-4,ROAD+8,H+8); }
+  for(const ry of ROADS_Y){ ctx.strokeRect(-4,ry-ROAD/2-4-y0,W+8,ROAD+8); }
+  // buildings with drop shadow + rooftop detail
+  for(const b of BUILDINGS){
+    ctx.fillStyle='rgba(0,0,0,.4)'; ctx.fillRect(b.x-x0+5,b.y-y0+6,b.w,b.h);
+    ctx.fillStyle=b.col; ctx.fillRect(b.x-x0,b.y-y0,b.w,b.h);
+    ctx.strokeStyle='rgba(255,255,255,.25)'; ctx.lineWidth=2; ctx.strokeRect(b.x-x0,b.y-y0,b.w,b.h);
+    ctx.fillStyle='rgba(255,255,255,.14)';
+    for(let wx=b.x+10;wx<b.x+b.w-12;wx+=22) for(let wy=b.y+10;wy<b.y+b.h-12;wy+=20) ctx.fillRect(wx-x0,wy-y0,10,8);
+    if(b.land){ ctx.fillStyle='#fff'; ctx.font='bold 15px Arial'; ctx.textAlign='center'; ctx.fillText(b.land,b.x+b.w/2-x0,b.y+b.h/2-y0); }
   }
-
-  // Landmark ground paint.
-  drawLandmarkGround();
-
-  // Buildings.
-  for (const b of BUILDINGS) drawBuilding(b);
-
-  // Lighthouse tower + bank + safehouse markers.
-  drawLighthouse();
-  drawSafehouse();
-
-  // Mission target ring + gold marker.
-  const target = missionTarget();
-  if (target && S.missionActive) {
-    const pulse = 1 + Math.sin(S.time * 4) * 0.12;
-    ctx.strokeStyle = '#ffd94a'; ctx.lineWidth = 4;
-    ctx.beginPath(); ctx.arc(target.x, target.y, target.r * 0.55 * pulse, 0, TAU); ctx.stroke();
-    ctx.fillStyle = '#ffd94a';
-    ctx.beginPath(); ctx.arc(target.x, target.y, 8, 0, TAU); ctx.fill();
-    // Direction arrow at screen edge handled in HUD.
-  }
-
-  // Pickups.
-  for (const pk of S.pickups) {
-    const bob = Math.sin(S.time * 3 + pk.x) * 3;
-    ctx.save(); ctx.translate(pk.x, pk.y + bob);
-    ctx.fillStyle = pk.kind === 'ammo' ? '#f2c230' : '#e74c3c';
-    ctx.strokeStyle = '#111'; ctx.lineWidth = 2;
-    ctx.beginPath(); ctx.arc(0, 0, 13, 0, TAU); ctx.fill(); ctx.stroke();
-    ctx.fillStyle = '#111';
-    ctx.font = 'bold 13px system-ui, sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-    ctx.fillText(pk.kind === 'ammo' ? 'A' : '+', 0, 0);
+  // pickups
+  for(const pk of G.pickups){
+    if(pk.taken) continue;
+    const bob=Math.sin(G.time*4+pk.x)*3;
+    ctx.save(); ctx.translate(pk.x-x0,pk.y-y0+bob);
+    if(pk.kind==='crate'){ ctx.fillStyle='#b7791f'; ctx.fillRect(-11,-11,22,22); ctx.strokeStyle='#5c3d0e'; ctx.lineWidth=2; ctx.strokeRect(-11,-11,22,22); ctx.fillStyle='#fff'; ctx.font='bold 11px Arial'; ctx.textAlign='center'; ctx.fillText('CRATE',0,4); }
+    else if(pk.kind==='health'){ ctx.fillStyle='#fff'; ctx.fillRect(-11,-11,22,22); ctx.fillStyle='#e74c3c'; ctx.fillRect(-3,-9,6,18); ctx.fillRect(-9,-3,18,6); }
+    else { ctx.fillStyle='#f1c40f'; ctx.beginPath(); ctx.arc(0,0,11,0,TAU); ctx.fill(); ctx.fillStyle='#7a5b00'; ctx.font='bold 13px Arial'; ctx.textAlign='center'; ctx.fillText('$',0,5); }
     ctx.restore();
   }
-
-  // Cars (traffic + parked + police).
-  for (const c of S.cars) drawCar(c);
-
-  // Pedestrians.
-  for (const ped of S.peds) drawPed(ped);
-
-  // Bullets.
-  ctx.fillStyle = '#ffe14a';
-  for (const b of S.bullets) { ctx.beginPath(); ctx.arc(b.x, b.y, 3, 0, TAU); ctx.fill(); }
-
-  // Player (on foot).
-  const p = S.player;
-  if (!p.inCar) drawPlayerOnFoot(p);
-
-  ctx.restore();
-}
-function drawPalm(x, y) {
-  ctx.strokeStyle = '#6b4a2f'; ctx.lineWidth = 4;
-  ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(x + 3, y - 16); ctx.stroke();
-  ctx.fillStyle = '#2f9e4f';
-  for (let i = 0; i < 5; i++) {
-    const a = (i / 5) * TAU;
-    ctx.beginPath(); ctx.ellipse(x + 3 + Math.cos(a) * 9, y - 16 + Math.sin(a) * 6, 10, 4, a, 0, TAU); ctx.fill();
+  // mission objective beacon
+  if(G.objective&&G.mode==='play'){
+    const pulse=1+Math.sin(G.time*5)*0.15;
+    ctx.save(); ctx.translate(G.objective.x-x0,G.objective.y-y0); ctx.scale(pulse,pulse);
+    ctx.strokeStyle='#ffdf3d'; ctx.lineWidth=4; ctx.beginPath(); ctx.arc(0,0,26,0,TAU); ctx.stroke();
+    ctx.fillStyle='#ffdf3d'; ctx.beginPath(); ctx.moveTo(0,-34); ctx.lineTo(10,-12); ctx.lineTo(-10,-12); ctx.closePath(); ctx.fill();
+    ctx.restore();
   }
-}
-function drawLandmarkGround() {
-  // Marina: docks planks + boats.
-  ctx.fillStyle = '#8a6b4a';
-  ctx.fillRect(2840, 120, 60, 320);
-  ctx.fillStyle = '#ffffff';
-  ctx.fillRect(2920, 140, 26, 70); ctx.fillRect(2920, 260, 26, 80);
-  ctx.fillStyle = '#d94f4f'; ctx.fillRect(2920, 380, 26, 60);
-  // Docks: containers.
-  const cols = ['#c0392b', '#2980b9', '#27ae60', '#f39c12'];
-  for (let i = 0; i < 6; i++) {
-    ctx.fillStyle = cols[i % 4];
-    ctx.fillRect(2860 + (i % 2) * 60, 1900 + Math.floor(i / 2) * 46, 54, 40);
+  // pedestrians
+  for(const pd of G.peds){
+    if(pd.x<-100) continue;
+    ctx.save(); ctx.translate(pd.x-x0,pd.y-y0); ctx.rotate(pd.a);
+    ctx.fillStyle=pd.col; ctx.beginPath(); ctx.arc(0,0,9,0,TAU); ctx.fill();
+    ctx.fillStyle='#222'; ctx.beginPath(); ctx.arc(5,0,5,0,TAU); ctx.fill();
+    ctx.restore();
   }
-  // Beach umbrellas.
-  for (const [x, y] of [[220, 240], [420, 320], [300, 480]]) {
-    ctx.fillStyle = '#e74c3c';
-    ctx.beginPath(); ctx.arc(x, y, 18, Math.PI, 0); ctx.fill();
-    ctx.strokeStyle = '#7a4a21'; ctx.lineWidth = 3;
-    ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(x, y + 16); ctx.stroke();
+  // guards (casino mission)
+  for(const g of G.guards||[]){
+    if(g.dead) continue;
+    ctx.save(); ctx.translate(g.x-x0,g.y-y0); ctx.rotate(g.a);
+    ctx.fillStyle='#7a1f1f'; ctx.beginPath(); ctx.arc(0,0,11,0,TAU); ctx.fill();
+    ctx.fillStyle='#111'; ctx.fillRect(8,-3,16,6);
+    ctx.restore();
+    ctx.fillStyle='#c0392b'; ctx.fillRect(g.x-14-x0,g.y-24-y0,28,4);
+    ctx.fillStyle='#2ecc71'; ctx.fillRect(g.x-14-x0,g.y-24-y0,28*g.hp/100,4);
   }
-  // Park: green + pond.
-  ctx.fillStyle = '#3f9e4d';
-  ctx.beginPath(); ctx.arc(LANDMARKS.park.x, LANDMARKS.park.y, 110, 0, TAU); ctx.fill();
-  ctx.fillStyle = '#2a7fa8';
-  ctx.beginPath(); ctx.arc(LANDMARKS.park.x + 30, LANDMARKS.park.y + 20, 30, 0, TAU); ctx.fill();
-  // Downtown plaza.
-  ctx.fillStyle = '#7a7f88';
-  ctx.beginPath(); ctx.arc(LANDMARKS.downtown.x, LANDMARKS.downtown.y, 60, 0, TAU); ctx.fill();
-}
-function drawBuilding(b) {
-  ctx.fillStyle = b.kind === 'tower' ? '#5a6270' : b.kind === 'shop' ? '#a8685a' : b.kind === 'warehouse' ? '#6b6f75' : '#b08968';
-  ctx.fillRect(b.x, b.y, b.w, b.h);
-  // Roof edge.
-  ctx.strokeStyle = 'rgba(0,0,0,0.35)'; ctx.lineWidth = 3;
-  ctx.strokeRect(b.x + 1.5, b.y + 1.5, b.w - 3, b.h - 3);
-  // Windows grid.
-  ctx.fillStyle = 'rgba(255, 240, 180, 0.85)';
-  const cols = Math.max(1, Math.floor(b.w / 34)), rows = Math.max(1, Math.floor(b.h / 34));
-  for (let i = 0; i < cols; i++) for (let j = 0; j < rows; j++) {
-    if (hash2(b.x + i * 31, b.y + j * 37) < 0.35) continue;
-    ctx.fillRect(b.x + 10 + i * 34, b.y + 10 + j * 34, 14, 12);
+  // cars + cops
+  for(const c of G.cars){ if(!c.dead){ ctx.save(); ctx.translate(-x0,-y0); drawCarAt(c); ctx.restore(); } }
+  // player
+  const p=G.player;
+  if(!p.inCar){
+    ctx.save(); ctx.translate(p.x-x0,p.y-y0); ctx.rotate(p.a);
+    ctx.fillStyle='#f5c542'; ctx.beginPath(); ctx.arc(0,0,12,0,TAU); ctx.fill();
+    ctx.fillStyle='#1f6fb2'; ctx.beginPath(); ctx.arc(6,0,7,0,TAU); ctx.fill();
+    ctx.fillStyle='#111'; ctx.fillRect(8,-2,12,4);
+    ctx.restore();
+    // aim line
+    const wx=p.x, wy=p.y;
+    const ax=cam.x+(G.mouse.x-W/2), ay=cam.y+(G.mouse.y-H/2);
+    ctx.strokeStyle='rgba(255,255,255,.35)'; ctx.lineWidth=1;
+    ctx.beginPath(); ctx.moveTo(wx-x0,wy-y0); ctx.lineTo(ax-x0,ay-y0); ctx.stroke();
   }
-  // Door.
-  ctx.fillStyle = '#2b2b2b';
-  ctx.fillRect(b.x + b.w / 2 - 9, b.y + b.h - 16, 18, 16);
+  // bullets
+  ctx.fillStyle='#ffe14d';
+  for(const b of G.bullets){ ctx.beginPath(); ctx.arc(b.x-x0,b.y-y0,3,0,TAU); ctx.fill(); }
+  // particles
+  for(const pt of G.parts){ ctx.globalAlpha=pt.life; ctx.fillStyle=pt.col; ctx.fillRect(pt.x-x0-3,pt.y-y0-3,6,6); }
+  ctx.globalAlpha=1;
 }
-function drawLighthouse() {
-  const L = LANDMARKS.lighthouse;
-  ctx.fillStyle = '#e8e4d8';
-  ctx.fillRect(L.x - 14, L.y - 30, 28, 60);
-  ctx.fillStyle = '#d94f4f';
-  ctx.fillRect(L.x - 14, L.y - 30, 28, 12); ctx.fillRect(L.x - 14, L.y - 6, 28, 12);
-  ctx.fillStyle = '#ffd94a';
-  ctx.beginPath(); ctx.arc(L.x, L.y - 34, 8, 0, TAU); ctx.fill();
-  // Rotating beam.
-  const a = S.time * 0.7;
-  const g = ctx.createLinearGradient(L.x, L.y, L.x + Math.cos(a) * 300, L.y + Math.sin(a) * 300);
-  g.addColorStop(0, 'rgba(255, 240, 150, 0.35)'); g.addColorStop(1, 'rgba(255, 240, 150, 0)');
-  ctx.fillStyle = g;
-  ctx.beginPath();
-  ctx.moveTo(L.x, L.y - 34);
-  ctx.lineTo(L.x + Math.cos(a - 0.12) * 300, L.y - 34 + Math.sin(a - 0.12) * 300);
-  ctx.lineTo(L.x + Math.cos(a + 0.12) * 300, L.y - 34 + Math.sin(a + 0.12) * 300);
-  ctx.closePath(); ctx.fill();
-}
-function drawSafehouse() {
-  const L = LANDMARKS.safehouse;
-  ctx.fillStyle = '#3f7a4d';
-  ctx.beginPath(); ctx.arc(L.x, L.y, L.r, 0, TAU); ctx.fill();
-  ctx.fillStyle = '#e8e4d8';
-  ctx.font = 'bold 15px system-ui, sans-serif'; ctx.textAlign = 'center';
-  ctx.fillText('SAFEHOUSE', L.x, L.y + 4);
-}
-function drawCar(c) {
-  ctx.save();
-  ctx.translate(c.x, c.y);
-  ctx.rotate(c.angle);
-  // Shadow.
-  ctx.fillStyle = 'rgba(0,0,0,0.3)';
-  ctx.fillRect(-c.w / 2 + 3, -c.h / 2 + 3, c.w, c.h);
-  // Body.
-  ctx.fillStyle = c.color;
-  roundRect(-c.w / 2, -c.h / 2, c.w, c.h, 7); ctx.fill();
-  ctx.strokeStyle = 'rgba(0,0,0,0.5)'; ctx.lineWidth = 2;
-  roundRect(-c.w / 2, -c.h / 2, c.w, c.h, 7); ctx.stroke();
-  // Cabin + windshield.
-  ctx.fillStyle = '#20262e';
-  roundRect(-c.w / 2 + 10, -c.h / 2 + 4, c.w * 0.42, c.h - 8, 4); ctx.fill();
-  ctx.fillStyle = 'rgba(180,220,255,0.75)';
-  ctx.fillRect(c.w * 0.12, -c.h / 2 + 5, 6, c.h - 10);
-  // Headlights / taillights.
-  ctx.fillStyle = '#ffe9a8';
-  ctx.fillRect(c.w / 2 - 3, -c.h / 2 + 3, 3, 5); ctx.fillRect(c.w / 2 - 3, c.h / 2 - 8, 3, 5);
-  ctx.fillStyle = '#ff4a4a';
-  ctx.fillRect(-c.w / 2, -c.h / 2 + 3, 3, 5); ctx.fillRect(-c.w / 2, c.h / 2 - 8, 3, 5);
-  if (c.police) {
-    // Light bar + POLICE text.
-    ctx.fillStyle = (Math.floor(S.time * 4) % 2 === 0) ? '#ff3b30' : '#3b82ff';
-    ctx.fillRect(-6, -c.h / 2 - 2, 12, 5);
-    ctx.fillStyle = '#fff';
-    ctx.font = 'bold 8px system-ui, sans-serif'; ctx.textAlign = 'center';
-    ctx.fillText('POLICE', 0, 3);
-  } else if (c.type === 'taxi') {
-    ctx.fillStyle = '#111';
-    ctx.font = 'bold 8px system-ui, sans-serif'; ctx.textAlign = 'center';
-    ctx.fillText('TAXI', 0, 3);
+function drawCarAt(c){
+  ctx.save(); ctx.translate(c.x,c.y); ctx.rotate(c.a);
+  ctx.fillStyle='rgba(0,0,0,.35)'; ctx.fillRect(-24,-12,48,28);
+  ctx.fillStyle=c.body; ctx.fillRect(-23,-12,46,24);
+  ctx.fillStyle='#1c2733'; ctx.fillRect(-6,-10,14,20);
+  ctx.fillStyle='#ffd76a'; ctx.fillRect(20,-10,3,5); ctx.fillRect(20,5,3,5);
+  ctx.fillStyle='#ff3b30'; ctx.fillRect(-23,-10,3,5); ctx.fillRect(-23,5,3,5);
+  if(c.police){
+    ctx.fillStyle='#fff'; ctx.fillRect(-23,-12,46,24);
+    ctx.fillStyle='#111'; ctx.fillRect(-4,-12,12,24);
+    ctx.fillStyle='#d21f2b'; ctx.fillRect(2,-11,7,6); ctx.fillStyle='#2456d6'; ctx.fillRect(2,5,7,6);
+    ctx.fillStyle='#111'; ctx.font='bold 8px Arial'; ctx.textAlign='center'; ctx.fillText('POLICE',-8,3);
   }
   ctx.restore();
-  // Player-car outline.
-  if (S.player.inCar === c) {
-    ctx.strokeStyle = '#ffd94a'; ctx.lineWidth = 3;
-    ctx.beginPath(); ctx.arc(c.x, c.y, 34, 0, TAU); ctx.stroke();
-  }
 }
-function roundRect(x, y, w, h, r) {
-  ctx.beginPath();
-  ctx.moveTo(x + r, y);
-  ctx.arcTo(x + w, y, x + w, y + h, r);
-  ctx.arcTo(x + w, y + h, x, y + h, r);
-  ctx.arcTo(x, y + h, x, y, r);
-  ctx.arcTo(x, y, x + w, y, r);
-  ctx.closePath();
-}
-function drawPed(ped) {
-  ctx.save();
-  ctx.translate(ped.x, ped.y);
-  ctx.rotate(ped.angle);
-  ctx.fillStyle = ped.state === 'flee' ? '#ff6b5e' : ped.color;
-  ctx.beginPath(); ctx.arc(0, 0, 9, 0, TAU); ctx.fill();
-  ctx.fillStyle = ped.shirt;
-  ctx.fillRect(-6, -6, 12, 12);
-  ctx.fillStyle = '#20262e';
-  ctx.fillRect(6, -3, 5, 6); // facing nub
-  ctx.restore();
-}
-function drawPlayerOnFoot(p) {
-  ctx.save();
-  ctx.translate(p.x, p.y);
-  ctx.rotate(p.angle);
-  ctx.fillStyle = '#ffd94a';
-  ctx.beginPath(); ctx.arc(0, 0, 13, 0, TAU); ctx.fill();
-  ctx.strokeStyle = '#111'; ctx.lineWidth = 2;
-  ctx.beginPath(); ctx.arc(0, 0, 13, 0, TAU); ctx.stroke();
-  ctx.fillStyle = '#1f6feb';
-  ctx.fillRect(-7, -7, 14, 14);
-  ctx.fillStyle = '#fff';
-  ctx.fillRect(7, -3, 6, 6);
-  ctx.restore();
-  // Player ring.
-  ctx.strokeStyle = 'rgba(255, 217, 74, 0.9)'; ctx.lineWidth = 2;
-  ctx.beginPath(); ctx.arc(p.x, p.y, 20 + Math.sin(S.time * 3) * 2, 0, TAU); ctx.stroke();
-}
+</script>
 
-// ---------------------------------------------------------------- HUD
-function drawHUD() {
-  const p = S.player;
-  ctx.save();
-  // Top-left: health, cash, ammo.
-  ctx.fillStyle = 'rgba(10, 16, 28, 0.72)';
-  roundRect(14, 14, 250, 92, 10); ctx.fill();
-  ctx.fillStyle = '#fff';
-  ctx.font = 'bold 15px system-ui, sans-serif'; ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
-  ctx.fillText('$' + S.cash.toLocaleString('en-US'), 26, 34);
-  ctx.fillStyle = '#9fb3c8'; ctx.font = '13px system-ui, sans-serif';
-  ctx.fillText('Ammo ' + p.ammo + (p.inCar ? '  ·  ' + CAR_TYPES[p.inCar.type].name : '  ·  on foot'), 26, 56);
-  // Health bar.
-  ctx.fillStyle = '#333';
-  ctx.fillRect(26, 70, 200, 12);
-  ctx.fillStyle = S.health > 50 ? '#37c978' : S.health > 25 ? '#f2c230' : '#e74c3c';
-  ctx.fillRect(26, 70, 200 * (S.health / 100), 12);
-  ctx.fillStyle = '#fff'; ctx.font = '11px system-ui, sans-serif';
-  ctx.fillText('HEALTH ' + Math.ceil(S.health), 26, 92 - 0); // label inside bar area
-
-  // Top-centre: wanted stars.
-  ctx.font = '26px system-ui, sans-serif'; ctx.textAlign = 'center';
-  let stars = '';
-  for (let i = 0; i < 5; i++) stars += i < S.wanted ? '★' : '☆';
-  ctx.fillStyle = S.wanted > 0 ? '#ffd94a' : 'rgba(255,255,255,0.45)';
-  ctx.fillText(stars, canvas.width / 2, 34);
-  if (S.wanted > 0) {
-    ctx.fillStyle = '#ffb3ad'; ctx.font = 'bold 13px system-ui, sans-serif';
-    ctx.fillText(S.wanted >= 5 ? 'MAXIMUM HEAT — RUN!' : 'WANTED — LOSE THE CRUISERS', canvas.width / 2, 58);
+<script>
+"use strict";
+/* ---------- HUD + minimap ---------- */
+function drawHUD(){
+  // top-left: cash, health, score
+  ctx.fillStyle='rgba(0,0,0,.55)'; ctx.fillRect(14,14,300,86);
+  ctx.strokeStyle='#f1c40f'; ctx.lineWidth=2; ctx.strokeRect(14,14,300,86);
+  ctx.fillStyle='#2ecc71'; ctx.font='bold 24px Arial'; ctx.textAlign='left';
+  ctx.fillText('$'+G.cash.toLocaleString(),28,44);
+  ctx.fillStyle='#fff'; ctx.font='16px Arial';
+  ctx.fillText('SCORE '+G.score+'   KILLS '+G.kills+'   CARS '+G.carsStolen,28,68);
+  // health bar
+  ctx.fillStyle='#333'; ctx.fillRect(28,76,200,10);
+  ctx.fillStyle=G.health>40?'#2ecc71':'#e74c3c'; ctx.fillRect(28,76,200*G.health/100,10);
+  ctx.fillStyle='#fff'; ctx.font='12px Arial'; ctx.fillText('HP '+Math.ceil(G.health),234,85);
+  // wanted stars top-right (above minimap)
+  for(let i=0;i<5;i++){
+    ctx.font='30px Arial'; ctx.textAlign='center';
+    ctx.fillStyle=i<G.wanted?'#ffd700':'rgba(255,255,255,.25)';
+    ctx.fillText('★',W-260+i*36,52);
   }
-
-  // Mission objective line.
-  if (S.missionActive) {
-    const m = MISSIONS[S.missionIdx];
-    ctx.fillStyle = 'rgba(10, 16, 28, 0.72)';
-    roundRect(14, 116, 430, 54, 10); ctx.fill();
-    ctx.fillStyle = '#ffd94a'; ctx.font = 'bold 14px system-ui, sans-serif'; ctx.textAlign = 'left';
-    ctx.fillText(m.title + '  ·  $' + m.reward, 26, 134);
-    ctx.fillStyle = '#fff'; ctx.font = '13px system-ui, sans-serif';
-    const target = missionTarget();
-    const tname = m.id === 3 ? 'Lose the wanted level' : target ? 'Go to ' + target.name : '';
-    const timer = m.timeLimit > 0 ? '  ·  ' + Math.ceil(S.missionTimer) + 's' : '';
-    ctx.fillText(tname + timer, 26, 156);
-  } else if (S.missionIdx >= 0 && S.missionIdx < MISSIONS.length) {
-    ctx.fillStyle = 'rgba(10, 16, 28, 0.6)';
-    roundRect(14, 116, 300, 30, 8); ctx.fill();
-    ctx.fillStyle = '#cfe3ff'; ctx.font = '13px system-ui, sans-serif'; ctx.textAlign = 'left';
-    ctx.fillText('Next job from Carmen Sol incoming…', 26, 132);
+  // mission panel
+  if(G.missionText){
+    ctx.fillStyle='rgba(0,0,0,.55)'; ctx.fillRect(14,112,560,52);
+    ctx.strokeStyle='#f1c40f'; ctx.lineWidth=1; ctx.strokeRect(14,112,560,52);
+    ctx.fillStyle='#ffd76a'; ctx.font='bold 15px Arial'; ctx.textAlign='left';
+    ctx.fillText(G.missionText.slice(0,74),26,134);
+    ctx.fillStyle='#fff'; ctx.font='13px Arial';
+    ctx.fillText(G.missionText.slice(74,150),26,154);
   }
-
-  // Speed (in car).
-  if (p.inCar) {
-    ctx.fillStyle = 'rgba(10, 16, 28, 0.72)';
-    roundRect(canvas.width - 150, canvas.height - 58, 136, 44, 10); ctx.fill();
-    ctx.fillStyle = '#fff'; ctx.font = 'bold 20px system-ui, sans-serif'; ctx.textAlign = 'right';
-    ctx.fillText(Math.round(Math.abs(p.inCar.speed) * 0.36) + ' km/h', canvas.width - 28, canvas.height - 36);
+  // message banner
+  if(G.msgT>0){
+    ctx.globalAlpha=Math.min(1,G.msgT);
+    ctx.fillStyle='rgba(0,0,0,.65)'; const tw=ctx.measureText(G.msg).width+40;
+    ctx.fillRect(W/2-280,660,560,44);
+    ctx.fillStyle='#fff'; ctx.font='bold 16px Arial'; ctx.textAlign='center';
+    ctx.fillText(G.msg.slice(0,90),W/2,688);
+    ctx.globalAlpha=1;
   }
-
-  // Minimap (top-right).
+  if(G.saveFlash>0){ ctx.fillStyle='#2ecc71'; ctx.font='bold 15px Arial'; ctx.textAlign='right'; ctx.fillText('✓ SAVED',W-24,H-18); }
   drawMinimap();
-
-  // Mission target edge arrow.
-  const target = missionTarget();
-  if (target && S.missionActive) {
-    const dx = target.x - p.x, dy = target.y - p.y;
-    const d = Math.hypot(dx, dy);
-    if (d > 420) {
-      const a = Math.atan2(dy, dx);
-      const ax = canvas.width / 2 + Math.cos(a) * 210;
-      const ay = canvas.height / 2 + Math.sin(a) * 150;
-      ctx.save(); ctx.translate(ax, ay); ctx.rotate(a);
-      ctx.fillStyle = '#ffd94a';
-      ctx.beginPath(); ctx.moveTo(16, 0); ctx.lineTo(-8, -10); ctx.lineTo(-8, 10); ctx.closePath(); ctx.fill();
-      ctx.restore();
-      ctx.fillStyle = '#ffd94a'; ctx.font = 'bold 12px system-ui, sans-serif'; ctx.textAlign = 'center';
-      ctx.fillText(Math.round(d) + 'm', ax, ay + 26);
-    }
-  }
-
-  // Toast.
-  if (S.toast) {
-    ctx.fillStyle = 'rgba(10, 16, 28, 0.8)';
-    ctx.font = '14px system-ui, sans-serif';
-    const w = ctx.measureText(S.toast.text).width + 28;
-    roundRect((canvas.width - w) / 2, canvas.height - 96, w, 32, 8); ctx.fill();
-    ctx.fillStyle = '#fff'; ctx.textAlign = 'center';
-    ctx.fillText(S.toast.text, canvas.width / 2, canvas.height - 80);
-  }
-
-  // Banner (mission start / complete / busted).
-  if (S.banner) {
-    ctx.fillStyle = 'rgba(8, 12, 22, 0.82)';
-    ctx.fillRect(0, canvas.height / 2 - 74, canvas.width, 148);
-    ctx.fillStyle = '#ffd94a'; ctx.font = 'bold 34px system-ui, sans-serif'; ctx.textAlign = 'center';
-    ctx.fillText(S.banner.text, canvas.width / 2, canvas.height / 2 - 14);
-    ctx.fillStyle = '#fff'; ctx.font = '16px system-ui, sans-serif';
-    wrapText(S.banner.sub, canvas.width / 2, canvas.height / 2 + 22, 900, 22);
-  }
-  ctx.restore();
+  // controls footer
+  ctx.fillStyle='rgba(255,255,255,.55)'; ctx.font='12px Arial'; ctx.textAlign='left';
+  ctx.fillText('WASD move/drive · Shift run · E car · Space brake · Click shoot · L save · P pause',14,H-12);
 }
-function wrapText(text, cx, y, maxW, lh) {
-  const words = text.split(' ');
-  let line = '';
-  const lines = [];
-  for (const w of words) {
-    const test = line ? line + ' ' + w : w;
-    if (ctx.measureText(test).width > maxW && line) { lines.push(line); line = w; }
-    else line = test;
-  }
-  if (line) lines.push(line);
-  lines.forEach((ln, i) => ctx.fillText(ln, cx, y + i * lh));
-}
-function drawMinimap() {
-  const MW = 210, MH = 158, mx = canvas.width - MW - 14, my = 14;
-  const sx = MW / WORLD.w, sy = MH / WORLD.h;
-  ctx.save();
-  ctx.fillStyle = 'rgba(10, 16, 28, 0.78)';
-  roundRect(mx - 6, my - 6, MW + 12, MH + 12, 10); ctx.fill();
-  // Water + land.
-  ctx.fillStyle = '#2a7fa8'; ctx.fillRect(mx, my, MW, MH);
-  ctx.fillStyle = '#2e6b34'; ctx.fillRect(mx, my, MW - 26, MH);
-  // Roads.
-  ctx.strokeStyle = '#3a3f46'; ctx.lineWidth = 3;
-  for (const rx of ROADS_X) { ctx.beginPath(); ctx.moveTo(mx + rx * sx, my); ctx.lineTo(mx + rx * sx, my + MH); ctx.stroke(); }
-  for (const ry of ROADS_Y) { ctx.beginPath(); ctx.moveTo(mx, my + ry * sy); ctx.lineTo(mx + MW, my + ry * sy); ctx.stroke(); }
-  // Landmarks.
-  ctx.fillStyle = '#ffd94a';
-  for (const k in LANDMARKS) {
-    const L = LANDMARKS[k];
-    ctx.beginPath(); ctx.arc(mx + L.x * sx, my + L.y * sy, 3, 0, TAU); ctx.fill();
-  }
-  // Mission target.
-  const target = missionTarget();
-  if (target && S.missionActive) {
-    ctx.fillStyle = '#ffd94a';
-    ctx.beginPath(); ctx.arc(mx + target.x * sx, my + target.y * sy, 6 + Math.sin(S.time * 4) * 1.5, 0, TAU); ctx.fill();
-  }
-  // Police (red dots).
-  ctx.fillStyle = '#ff5a4a';
-  for (const c of S.police) { ctx.beginPath(); ctx.arc(mx + c.x * sx, my + c.y * sy, 3, 0, TAU); ctx.fill(); }
-  // Cars (white dots).
-  ctx.fillStyle = 'rgba(255,255,255,0.75)';
-  for (const c of S.cars) {
-    if (c.police) continue;
-    ctx.fillRect(mx + c.x * sx - 1, my + c.y * sy - 1, 2, 2);
-  }
-  // Player (gold dot + view cone hint).
-  ctx.fillStyle = '#ffd94a';
-  ctx.beginPath(); ctx.arc(mx + S.player.x * sx, my + S.player.y * sy, 5, 0, TAU); ctx.fill();
-  ctx.strokeStyle = '#ffd94a'; ctx.lineWidth = 2;
-  ctx.beginPath(); ctx.arc(mx + S.player.x * sx, my + S.player.y * sy, 7, 0, TAU); ctx.stroke();
-  ctx.fillStyle = '#cfe3ff'; ctx.font = '11px system-ui, sans-serif'; ctx.textAlign = 'left';
-  ctx.fillText('SOLMAR BAY', mx, my + MH + 22);
-  ctx.restore();
+function drawMinimap(){
+  const mw=210, mh=160, mx=W-mw-16, my=64;
+  const sx=mw/WORLD.w, sy=mh/WORLD.h;
+  ctx.fillStyle='rgba(0,0,0,.6)'; ctx.fillRect(mx-4,my-4,mw+8,mh+8);
+  for(const d of DISTRICTS){ ctx.fillStyle=d.col; ctx.fillRect(mx+d.x*sx,my+d.y*sy,d.w*sx,d.h*sy); }
+  ctx.fillStyle='#555';
+  for(const rx of ROADS_X) ctx.fillRect(mx+rx*sx-1,my,2,mh);
+  for(const ry of ROADS_Y) ctx.fillRect(mx,my+ry*sy,mw,2);
+  if(G.objective){ ctx.fillStyle='#ffdf3d'; ctx.beginPath(); ctx.arc(mx+G.objective.x*sx,my+G.objective.y*sy,5,0,TAU); ctx.fill(); }
+  for(const c of G.cops){ if(!c.dead){ ctx.fillStyle='#3b82f6'; ctx.fillRect(mx+c.x*sx-2,my+c.y*sy-2,4,4); } }
+  const p=G.player;
+  ctx.fillStyle='#f5c542'; ctx.beginPath(); ctx.arc(mx+p.x*sx,my+p.y*sy,5,0,TAU); ctx.fill();
+  ctx.strokeStyle='#fff'; ctx.lineWidth=1.5; ctx.beginPath(); ctx.arc(mx+p.x*sx,my+p.y*sy,5,0,TAU); ctx.stroke();
+  ctx.fillStyle='#fff'; ctx.font='bold 12px Arial'; ctx.textAlign='left';
+  ctx.fillText(districtAt(p.x,p.y).name.toUpperCase(),mx,my+mh+18);
 }
 
-// ---------------------------------------------------------------- screens
-// Precomputed skyline so the title screen does not flicker every frame.
-const SKYLINE = [];
-(function buildSkyline() {
-  let bx = 0;
-  while (bx < canvas.width) {
-    const bw = rand(50, 110), bh = rand(120, 300);
-    SKYLINE.push({ x: bx, w: bw, h: bh });
-    bx += bw + 8;
-  }
-})();
-
-function drawTitle() {
-  ctx.fillStyle = '#0b1220';
-  ctx.fillRect(0, 0, canvas.width, canvas.height);
-  // Sun + skyline silhouette.
-  const g = ctx.createLinearGradient(0, 0, 0, canvas.height);
-  g.addColorStop(0, '#ff9a56'); g.addColorStop(0.55, '#c94b7a'); g.addColorStop(1, '#1b2a52');
-  ctx.fillStyle = g; ctx.fillRect(0, 0, canvas.width, canvas.height);
-  ctx.fillStyle = '#ffe9a8';
-  ctx.beginPath(); ctx.arc(canvas.width - 240, 150, 70, 0, TAU); ctx.fill();
-  ctx.fillStyle = '#141c2e';
-  for (const b of SKYLINE) ctx.fillRect(b.x, canvas.height - b.h - 90, b.w, b.h + 90);
-  // Sea.
-  ctx.fillStyle = '#1d5f8a';
-  ctx.fillRect(0, canvas.height - 90, canvas.width, 90);
-  ctx.fillStyle = 'rgba(255,255,255,0.25)';
-  for (let i = 0; i < 8; i++) ctx.fillRect(((i * 173 + S.time * 20) % (canvas.width + 100)) - 50, canvas.height - 60 + (i % 3) * 18, 60, 3);
-
-  ctx.textAlign = 'center';
-  ctx.fillStyle = '#fff';
-  ctx.font = 'bold 84px system-ui, sans-serif';
-  ctx.fillText('SOLMAR BAY', canvas.width / 2, 220);
-  ctx.fillStyle = '#ffd94a';
-  ctx.font = 'bold 22px system-ui, sans-serif';
-  ctx.fillText('A TOP-DOWN OPEN-WORLD CRIME GAME', canvas.width / 2, 262);
-  ctx.fillStyle = '#e8eef7';
-  ctx.font = '17px system-ui, sans-serif';
-  ctx.fillText('Steal cars. Outrun the bay police. Four jobs from fixer Carmen Sol.', canvas.width / 2, 300);
-  ctx.fillText('One island. No rules but yours.', canvas.width / 2, 326);
-
-  const save = loadSave();
-  const items = save
-    ? ['▶  CONTINUE — $' + (save.cash || 0) + ' · mission ' + Math.min((save.missionIdx || 0) + 1, 4) + ' of 4', '▶  NEW GAME']
-    : ['▶  NEW GAME'];
-  ctx.font = 'bold 24px system-ui, sans-serif';
-  items.forEach((label, i) => {
-    const y = 430 + i * 56;
-    ctx.fillStyle = 'rgba(10, 16, 28, 0.7)';
-    roundRect(canvas.width / 2 - 260, y - 28, 520, 44, 10); ctx.fill();
-    ctx.fillStyle = '#ffd94a';
-    ctx.fillText(label, canvas.width / 2, y + 2);
-  });
-  ctx.fillStyle = '#cfe3ff';
-  ctx.font = '15px system-ui, sans-serif';
-  ctx.fillText('WASD move / drive · E enter car · F or click shoot · Shift run', canvas.width / 2, 560);
-  ctx.fillText('P pause · L save · M mute · Click or press Enter to start', canvas.width / 2, 586);
-  ctx.fillStyle = 'rgba(255,255,255,0.55)';
-  ctx.font = '13px system-ui, sans-serif';
-  ctx.fillText('An original game — no Rockstar IP. Built for the make.fun "Make GTA 6" bounty.', canvas.width / 2, 640);
-
-  // Start on Enter / click.
-  const start = (isContinue) => {
-    AudioSys.ensure();
-    resetWorld(S.demo);
-    if (isContinue && save) applySave(save);
-    else startMission(0, true);
-    S.screen = 'play';
-    S.banner = { text: 'WELCOME TO SOLMAR BAY', sub: 'Carmen Sol has work for you — steal a car and follow the gold marker.', t: 4 };
-  };
-  if (justPressed['enter']) start(!!save);
-  if (justPressed['mouse']) {
-    const my = mouse.y;
-    if (save && my > 402 && my < 446) start(true);
-    else if ((!save && my > 402 && my < 446) || (save && my > 458 && my < 502)) start(false);
-  }
+/* ---------- screens ---------- */
+function drawTitle(){
+  ctx.fillStyle='#0b1020'; ctx.fillRect(0,0,W,H);
+  // skyline silhouette
+  ctx.fillStyle='#16224a';
+  for(let x=0;x<W;x+=70){ const h=120+((x*37)%180); ctx.fillRect(x,H-260-h,58,h); }
+  ctx.fillStyle='#f1c40f'; ctx.font='bold 84px Arial'; ctx.textAlign='center';
+  ctx.fillText('SOLMAR BAY',W/2,250);
+  ctx.fillStyle='#7fb3ff'; ctx.font='28px Arial';
+  ctx.fillText('An open-world crime game — explore, steal, run, survive.',W/2,300);
+  ctx.fillStyle='#fff'; ctx.font='18px Arial';
+  ctx.fillText('WASD move / drive · Shift run · E enter or steal a car · Space handbrake',W/2,380);
+  ctx.fillText('Mouse aim · Click to shoot · L save game · P pause',W/2,410);
+  ctx.fillStyle='#ffd76a'; ctx.font='bold 22px Arial';
+  ctx.fillText('4 missions · Wanted level 1–5 · Police chases · Your fixer: Marco Vane',W/2,470);
+  const pulse=0.6+Math.sin(G.time*3)*0.4;
+  ctx.globalAlpha=pulse; ctx.fillStyle='#2ecc71'; ctx.font='bold 26px Arial';
+  ctx.fillText('— PRESS ENTER OR CLICK TO PLAY —',W/2,540); ctx.globalAlpha=1;
+  const s=loadSave();
+  if(s) { ctx.fillStyle='#9fb4d8'; ctx.font='16px Arial'; ctx.fillText('Save found: $'+s.cash+' · Mission '+(s.mission+1)+' — press Enter to start fresh',W/2,580); }
+  ctx.fillStyle='rgba(255,255,255,.4)'; ctx.font='13px Arial';
+  ctx.fillText('Solmar Bay is an original game. Not affiliated with Rockstar Games or Grand Theft Auto.',W/2,H-24);
 }
-function drawPaused() {
-  drawWorld();
-  ctx.fillStyle = 'rgba(8, 12, 22, 0.7)';
-  ctx.fillRect(0, 0, canvas.width, canvas.height);
-  ctx.fillStyle = '#fff'; ctx.textAlign = 'center';
-  ctx.font = 'bold 48px system-ui, sans-serif';
-  ctx.fillText('PAUSED', canvas.width / 2, canvas.height / 2 - 30);
-  ctx.font = '18px system-ui, sans-serif';
-  ctx.fillText('P or Esc to resume · L to save · M to mute', canvas.width / 2, canvas.height / 2 + 16);
-  if (justPressed['p'] || justPressed['escape']) S.screen = 'play';
-  if (justPressed['l']) { saveGame(); showToast('Game saved'); S.screen = 'play'; }
+function drawPause(){
+  ctx.fillStyle='rgba(0,0,0,.6)'; ctx.fillRect(0,0,W,H);
+  ctx.fillStyle='#fff'; ctx.font='bold 48px Arial'; ctx.textAlign='center';
+  ctx.fillText('PAUSED',W/2,H/2-20);
+  ctx.font='18px Arial'; ctx.fillText('Press P to resume · L to save',W/2,H/2+20);
 }
-function drawEndScreen(kind) {
-  drawWorld();
-  ctx.fillStyle = 'rgba(8, 12, 22, 0.78)';
-  ctx.fillRect(0, 0, canvas.width, canvas.height);
-  ctx.fillStyle = kind === 'busted' ? '#7fb3ff' : '#ff8a7a';
-  ctx.font = 'bold 64px system-ui, sans-serif'; ctx.textAlign = 'center';
-  ctx.fillText(kind === 'busted' ? 'BUSTED' : 'WASTED', canvas.width / 2, canvas.height / 2 - 20);
-  ctx.fillStyle = '#fff'; ctx.font = '18px system-ui, sans-serif';
-  ctx.fillText(kind === 'busted'
-    ? 'The bay police took you in. You wake up at the safehouse.'
-    : 'You wake up at the safehouse, patched up and poorer in pride.', canvas.width / 2, canvas.height / 2 + 24);
-  ctx.fillStyle = '#ffd94a'; ctx.font = 'bold 20px system-ui, sans-serif';
-  ctx.fillText('Press Enter to get back out there', canvas.width / 2, canvas.height / 2 + 70);
-  if (justPressed['enter']) {
-    S.health = 100; S.wanted = 0; S.wantedHeat = 0;
-    S.police = []; S.cars = S.cars.filter(c => !c.police);
-    S.player.x = LANDMARKS.safehouse.x; S.player.y = LANDMARKS.safehouse.y + 40;
-    S.player.inCar = null;
-    S.cam.x = S.player.x; S.cam.y = S.player.y;
-    S.screen = 'play';
-  }
+function drawEnd(win){
+  ctx.fillStyle='rgba(0,0,0,.75)'; ctx.fillRect(0,0,W,H);
+  ctx.fillStyle=win?'#ffd700':'#e74c3c'; ctx.font='bold 56px Arial'; ctx.textAlign='center';
+  ctx.fillText(win?'SOLMAR BAY IS YOURS':'BUSTED',W/2,H/2-60);
+  ctx.fillStyle='#fff'; ctx.font='20px Arial';
+  ctx.fillText(win?'All 4 missions complete. Marco Vane salutes you.':'The Solmar Bay PD got you. The city forgets fast.',W/2,H/2-10);
+  ctx.fillText('Score '+G.score+' · Cash $'+G.cash+' · Kills '+G.kills+' · Cars stolen '+G.carsStolen,W/2,H/2+30);
+  ctx.fillStyle='#2ecc71'; ctx.font='bold 22px Arial';
+  ctx.fillText('Press ENTER to play again',W/2,H/2+80);
 }
 
-// ---------------------------------------------------------------- main loop
-let last = performance.now();
-function frame(now) {
-  const dt = Math.min(0.05, (now - last) / 1000);
-  last = now;
-  if (S.screen === 'title') { drawTitle(); }
-  else if (S.screen === 'paused') { update(0); drawPaused(); }
-  else if (S.screen === 'busted') { drawEndScreen('busted'); }
-  else if (S.screen === 'wasted') { drawEndScreen('wasted'); }
-  else { update(dt); drawWorld(); drawHUD(); }
-  justPressed = {};
+/* ---------- main loop ---------- */
+let last=performance.now();
+function frame(now){
+  const dt=Math.min(0.05,(now-last)/1000); last=now;
+  G.time+=dt;
+  if(G.msgT>0) G.msgT-=dt;
+  if(G.saveFlash>0) G.saveFlash-=dt;
+  if(G.shake>0) G.shake-=dt*20;
+  if(G.mode==='play'){
+    updatePlayer(dt);
+    updateTraffic(dt);
+    updateCops(dt);
+    updateGuards(dt);
+    updateBullets(dt);
+    updateWanted(dt);
+    checkMission();
+    for(const pt of G.parts){ pt.x+=pt.vx*dt; pt.y+=pt.vy*dt; pt.life-=dt; }
+    G.parts=G.parts.filter(p=>p.life>0);
+    if(G.health<=0){ G.mode='dead'; G.health=0; }
+    // camera follows player
+    G.cam.x=clamp(G.player.x,W/2-80,WORLD.w-W/2+80);
+    G.cam.y=clamp(G.player.y,H/2-80,WORLD.h-H/2+80);
+    if(G.shake>0){ G.cam.x+=rand(-G.shake,G.shake); G.cam.y+=rand(-G.shake,G.shake); }
+  }
+  ctx.clearRect(0,0,W,H);
+  if(G.mode==='title'){ drawTitle(); }
+  else if(G.mode==='pause'){ drawWorld(); drawHUD(); drawPause(); }
+  else if(G.mode==='dead'||G.mode==='win'){ drawWorld(); drawHUD(); drawEnd(G.mode==='win'); }
+  else { drawWorld(); drawHUD(); }
   requestAnimationFrame(frame);
 }
 
-// Demo hooks (?demo=start|drive|mission|chase) for screenshots.
-const params = new URLSearchParams(location.search);
-S.demo = params.get('demo');
-if (S.demo === 'start') {
-  // Title screen only.
-} else if (S.demo === 'drive' || S.demo === 'mission' || S.demo === 'chase') {
-  resetWorld(S.demo);
-  startMission(0, true);
-  if (S.demo === 'mission') { /* mission 1 active, player in car */ }
-  if (S.demo === 'chase') { /* chase already set up in resetWorld */ }
-  if (S.demo === 'drive') { S.missionActive = false; }
-  S.screen = 'play';
-  S.banner = null;
-  S.toast = null;
+/* ---------- screenshot staging hook (?shot=...) ---------- */
+function applyShot(){
+  const q=new URLSearchParams(location.search).get('shot');
+  if(!q) return;
+  resetWorld(); G.mode='play';
+  if(q==='start'){ G.mode='title'; return; }
+  if(q==='drive'){
+    const c=nearestCar(2000)||spawnCar(G.player.x+80,G.player.y, false);
+    G.player.inCar=c; c.speed=300; c.a=0; G.player.x=c.x; G.player.y=c.y;
+    G.cam.x=clamp(c.x,W/2,WORLD.w-W/2); G.cam.y=clamp(c.y,H/2,WORLD.h-H/2);
+    return;
+  }
+  if(q==='mission'){
+    setMission(1); G.missionStep=1; G.objective={x:2450,y:300};
+    G.player.x=2300; G.player.y=420;
+    G.cam.x=clamp(G.player.x,W/2,WORLD.w-W/2); G.cam.y=clamp(G.player.y,H/2,WORLD.h-H/2);
+    flash('M2 · Market Run — collect the crates!');
+    return;
+  }
+  if(q==='chase'){
+    const c=spawnCar(G.player.x+60,G.player.y,false);
+    G.player.inCar=c; c.speed=380; c.a=0;
+    G.wanted=3; G.wantedHeat=100;
+    for(let i=0;i<3;i++) spawnCop(G.player.x+rand(-260,260),G.player.y+rand(-200,200));
+    G.objective={x:430,y:1135}; G.missionText='M4 · Casino Royale — lose the cops, hit the casino!';
+    flash('WANTED ★★★ — the whole PD is on you!');
+    return;
+  }
 }
+applyShot();
 requestAnimationFrame(frame);
 </script>
 </body>
