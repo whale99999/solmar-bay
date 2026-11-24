@@ -1,83 +1,143 @@
-// Solmar Bay — deterministic screenshot scenes behind ?shot= &seed=.
-// Each scene is a real game state, staged from a fresh seeded world:
-//   start   — title screen over the city
-//   drive   — Milo driving with traffic around, full HUD + minimap
-//   chase   — wanted 3 stars, SBPD cruisers in pursuit
-//   mission — an active mission with its objective marker and banner
-import { CFG } from './config.js';
-import { makeCar } from './vehicles.js';
-import { spawnPoliceCar } from './police.js';
-import { startMission } from './missions.js';
+// Solmar Bay — screenshot scenes behind ?shot=start|drive|mission|chase.
+// Each one plays the real rules forward from a fresh world for a fixed number
+// of steps, steered by a simple autopilot, so the frame is what real play
+// looks like and the same seed always gives the same frame.
+import { STEP } from './config.js';
+import { createState, updateEffects } from './world.js';
+import { updatePlayer } from './player.js';
+import { updateVehicles } from './vehicles.js';
+import { updatePedestrians } from './pedestrians.js';
+import { updatePolice } from './police.js';
+import { updateCombat } from './combat.js';
+import { updateMissions } from './missions.js';
+import { SCREEN_PLAY, SCREEN_TITLE } from './render.js';
 
-export function stageShot(G, name) {
-  const rng = G.rng;
-  const p = G.player;
-  if (name === 'start') {
-    G.state = 'title';
-    return;
+const START_SECONDS = 5;
+const DRIVE_SECONDS = 4;
+const MISSION_SECONDS = 2;
+const CHASE_SECONDS = 7;
+
+function makeInput() {
+  let steer = 0;
+  let throttle = 0;
+  return {
+    set(s, t) {
+      steer = s;
+      throttle = t;
+    },
+    steer() {
+      return steer;
+    },
+    throttle() {
+      return throttle;
+    },
+    moveX() {
+      return 0;
+    },
+    moveY() {
+      return 0;
+    },
+    running() {
+      return false;
+    },
+    shooting() {
+      return false;
+    },
+    takeActions() {
+      return 0;
+    },
+  };
+}
+
+// One fixed step of everything, with the given driving input.
+function stepAll(state, dt, input) {
+  state.time += dt;
+  updatePlayer(state, dt, input, null);
+  updateVehicles(state, dt, input);
+  updatePedestrians(state, dt);
+  updatePolice(state, dt, null);
+  updateCombat(state, dt, null);
+  updateMissions(state, dt, null);
+  updateEffects(state, dt);
+}
+
+// Put the player in a car on the east-west road at y=1000, heading east.
+function putPlayerInCar(state, x, y) {
+  const car = state.cars.find((c) => c.parked) || state.cars[0];
+  car.x = x;
+  car.y = y;
+  car.angle = 0;
+  car.speed = 0;
+  car.parked = false;
+  car.traffic = false;
+  car.stolen = true; // staged, not a fresh theft: no wanted jump
+  state.player.car = car;
+  state.player.onFoot = false;
+  state.player.x = x;
+  state.player.y = y;
+  state.player.angle = 0;
+  return car;
+}
+
+// Drive east along y=1000, steering back to the road centre when pushed off.
+function driveAutopilot(state, input, seconds) {
+  const steps = Math.round(seconds / STEP);
+  for (let i = 0; i < steps; i += 1) {
+    const car = state.player.car;
+    const steer = Math.max(-1, Math.min(1, (1000 - car.y) * 0.02));
+    input.set(steer, 1);
+    stepAll(state, STEP, input);
   }
-  G.state = 'playing';
+}
+
+/**
+ * Set up the named scene (start, drive, mission or chase) on a fresh seeded
+ * state and return the screen to draw over it.
+ */
+export function stageShot(name, seed) {
+  const state = createState(seed);
+  const input = makeInput();
   if (name === 'drive') {
-    // Milo driving east on the Neon Mile with traffic around him.
-    const car = makeCar(1400, 1000, 0, '#e84a4a', false);
-    car.owned = true;
-    G.cars.push(car);
-    p.inCar = true;
-    p.car = car;
-    car.driven = true;
-    car.speed = 240;
-    p.x = car.x;
-    p.y = car.y;
-    p.angle = 0;
-    p.cash = 1250;
-    startMission(G, 0);
-    G.banner = { text: 'First Fare — steal a car, deliver it to the Palmera Garage', t: 0, life: 30 };
-    G.missionBrief = { text: '', t: 99, life: 0 };
-    return;
-  }
-  if (name === 'chase') {
-    // Wanted 3 stars, Milo fleeing in a stolen car, cruisers closing in.
-    const car = makeCar(1600, 1400, -Math.PI / 2, '#f2c94c', false);
-    car.owned = true;
-    G.cars.push(car);
-    p.inCar = true;
-    p.car = car;
-    car.driven = true;
-    car.speed = 320;
-    p.x = car.x;
-    p.y = car.y;
-    p.angle = -Math.PI / 2;
-    p.cash = 2750;
-    p.health = 82;
-    // Mission 3's onStart raises the heat to 3 stars and rolls cruisers out.
-    startMission(G, 2);
-    G.banner = { text: 'WANTED ★★★ — Dockside Heat: reach the Coral Docks pier!', t: 0, life: 30 };
-    G.missionBrief = { text: '', t: 99, life: 0 };
-    spawnPoliceCar(G);
-    // Pull the cruisers in close so the chase reads in one frame.
-    for (let i = 0; i < G.police.length; i += 1) {
-      const cop = G.police[i];
-      const a = (i / G.police.length) * Math.PI * 2 + 0.6;
-      cop.x = p.x + Math.cos(a) * 260;
-      cop.y = p.y + Math.sin(a) * 260;
-      cop.angle = Math.atan2(p.y - cop.y, p.x - cop.x);
-      cop.speed = 300;
-    }
-    return;
+    putPlayerInCar(state, 800, 1000);
+    driveAutopilot(state, input, DRIVE_SECONDS);
+    return { state, screen: SCREEN_PLAY };
   }
   if (name === 'mission') {
-    // On foot on the Neon Mile, package marker ahead, mission live.
-    p.x = 1620;
-    p.y = 1020;
-    p.angle = 0;
-    p.cash = 800;
-    startMission(G, 1);
-    G.banner = { text: 'Neon Pickup — grab the package on the Neon Mile', t: 0, life: 30 };
-    G.missionBrief = { text: '', t: 99, life: 0 };
-    return;
+    // Carmen met, first job live: player walks up to the marina pickup.
+    state.missions.stage = 1;
+    state.missions.marker = { ...state.spots.marina };
+    state.missions.objective = 'Pick up the package at the marina.';
+    state.player.x = state.spots.marina.x;
+    state.player.y = state.spots.marina.y + 150;
+    state.player.angle = -Math.PI / 2;
+    for (let i = 0; i < Math.round(MISSION_SECONDS / STEP); i += 1) {
+      stepAll(state, STEP, input);
+    }
+    return { state, screen: SCREEN_PLAY };
   }
-  // Any other name: plain title.
-  G.state = 'title';
-  void CFG;
-  void rng;
+  if (name === 'chase') {
+    const car = putPlayerInCar(state, 1400, 1000);
+    state.player.wanted = 3;
+    state.player.wantedTimer = 0;
+    updatePolice(state, 0, null); // spawn the cruisers for wanted 3
+    // Pull the cruisers into frame, spread across lanes so they do not
+    // start in a pile-up: two closing in from behind, one head-on.
+    const spots = [
+      { x: car.x - 320, y: 978 }, { x: car.x - 460, y: 1044 }, { x: car.x + 380, y: 1000 },
+    ];
+    state.police.forEach((cop, i) => {
+      const s = spots[i % spots.length];
+      cop.x = s.x;
+      cop.y = s.y;
+      cop.angle = i === 2 ? Math.PI : 0;
+      cop.speed = 380;
+    });
+    driveAutopilot(state, input, CHASE_SECONDS);
+    return { state, screen: SCREEN_PLAY };
+  }
+  // Default: the title screen over a living city.
+  for (let i = 0; i < Math.round(START_SECONDS / STEP); i += 1) {
+    stepAll(state, STEP, input);
+  }
+  return { state, screen: SCREEN_TITLE };
 }

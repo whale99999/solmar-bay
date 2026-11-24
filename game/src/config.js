@@ -1,58 +1,73 @@
-// Solmar Bay — shared tuning, palette and tiny helpers.
-// Original top-down 2D open-world crime game for make.fun gta6-01.
-export const CFG = {
-  WORLD: 3200, // world is WORLD x WORLD px
-  ROAD_GAP: 400, // distance between road centre lines
-  ROAD_W: 64,
-  PLAYER_R: 14,
-  CAR_W: 26,
-  CAR_L: 46,
-  WALK_SPEED: 175,
-  CAR_ACCEL: 430,
-  CAR_MAX: 390,
-  CAR_REVERSE: 165,
-  CAR_TURN: 2.7,
-  BULLET_SPEED: 780,
-  SAVE_KEY: 'solmarbay-save-v1',
-  COLORS: {
-    ground: '#2e6b4f',
-    groundAlt: '#2a6248',
-    park: '#3f8f57',
-    road: '#3a3a44',
-    roadLine: '#e8c95a',
-    sidewalk: '#8a8f96',
-    water: '#1d6f8e',
-    sand: '#d9b380',
-    roof: ['#c96f4a', '#d9a05a', '#7a6fb0', '#4fa08a', '#b05a7a', '#5a8ac9'],
-    neon: ['#ff5ad1', '#37e6ff', '#ffe14d', '#7dff5a'],
-  },
-  DISTRICTS: [
-    { name: 'Palmera Strip', x0: 0, y0: 0, x1: 1100, y1: 1700, tint: '#e8a34d' },
-    { name: 'Neon Mile', x0: 1100, y0: 200, x1: 2300, y1: 1700, tint: '#ff5ad1' },
-    { name: 'Vista Hills', x0: 2300, y0: 0, x1: 3200, y1: 1100, tint: '#7dff5a' },
-    { name: 'Coral Docks', x0: 0, y0: 1700, x1: 3200, y1: 3200, tint: '#37e6ff' },
-  ],
+// Solmar Bay — shared constants, seeded random and small math helpers.
+// Original game, no third-party code. All world units are pixels.
+export const WORLD_W = 3200;
+export const WORLD_H = 2400;
+export const ROAD_W = 96;
+export const ROAD_GAP = 400;
+export const STEP = 1 / 60;
+export const SAVE_KEY = 'solmar-bay-save-v1';
+export const BEST_KEY = 'solmar-bay-best-v1';
+
+// Fixed palette for the whole game so every screen reads as one city.
+export const COLORS = {
+  grass: '#3d7a44',
+  grassDark: '#356b3b',
+  sand: '#d9c27a',
+  water: '#1d6f8e',
+  waterDeep: '#155a75',
+  road: '#2b2e33',
+  roadLine: '#e8c33a',
+  sidewalk: '#8d8578',
+  buildingRoof: ['#7a4a3a', '#4a6a7a', '#6a5a7a', '#8a6a3a', '#5a7a4a', '#7a3a4a'],
+  buildingWall: '#5c5648',
+  park: '#2f6b34',
+  car: ['#c0392b', '#2980b9', '#f1c40f', '#ecf0f1', '#8e44ad', '#16a085', '#e67e22', '#2c3e50'],
+  police: '#1c2733',
+  player: '#e74c3c',
 };
 
-// Deterministic RNG (mulberry32) so ?seed= scenes render identically.
-export function mulberry32(seed) {
+export function clamp(v, lo, hi) {
+  return v < lo ? lo : v > hi ? hi : v;
+}
+
+export function lerp(a, b, t) {
+  return a + (b - a) * t;
+}
+
+export function dist2(ax, ay, bx, by) {
+  const dx = ax - bx;
+  const dy = ay - by;
+  return dx * dx + dy * dy;
+}
+
+export function angleTo(ax, ay, bx, by) {
+  return Math.atan2(by - ay, bx - ax);
+}
+
+// Shortest signed turn from angle `from` toward angle `to`.
+export function angleDiff(from, to) {
+  let d = to - from;
+  while (d > Math.PI) d -= Math.PI * 2;
+  while (d < -Math.PI) d += Math.PI * 2;
+  return d;
+}
+
+// Deterministic PRNG (mulberry32) so ?seed=N replays the same city.
+export function createRandom(seed) {
   let a = seed >>> 0;
-  return function () {
-    a |= 0; a = (a + 0x6d2b79f5) | 0;
+  return function random() {
+    a |= 0;
+    a = (a + 0x6d2b79f5) | 0;
     let t = Math.imul(a ^ (a >>> 15), 1 | a);
     t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
     return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
   };
 }
 
-export function clamp(v, lo, hi) { return v < lo ? lo : v > hi ? hi : v; }
-export function lerp(a, b, t) { return a + (b - a) * t; }
-export function dist2(ax, ay, bx, by) { const dx = ax - bx, dy = ay - by; return dx * dx + dy * dy; }
-export function angTo(ax, ay, bx, by) { return Math.atan2(by - ay, bx - ax); }
-export function angDiff(a, b) {
-  let d = b - a;
-  while (d > Math.PI) d -= Math.PI * 2;
-  while (d < -Math.PI) d += Math.PI * 2;
-  return d;
+export function pick(rng, arr) {
+  return arr[Math.floor(rng() * arr.length)];
 }
-export function pick(rng, arr) { return arr[Math.floor(rng() * arr.length)]; }
+
+export function range(rng, lo, hi) {
+  return lo + rng() * (hi - lo);
+}

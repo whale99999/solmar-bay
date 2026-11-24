@@ -1,101 +1,154 @@
-// Solmar Bay — missions and story: four chained jobs from fixer Carmen Sol.
-// Each mission has a briefing, a map target, a completion rule and a cash reward.
-import { CFG } from './config.js';
-import { addWanted, spawnPoliceCar } from './police.js';
+// Solmar Bay — the story: four jobs for fixer Carmen Sol, in order.
+// Each mission points at a gold marker; reaching it (or finishing its fight)
+// pays out, advances the story and saves the game.
+import { dist2 } from './config.js';
+import { addFloat, showMessage } from './world.js';
+import { scarePeds } from './pedestrians.js';
 
-export const MISSIONS = [
+const MISSIONS = [
   {
-    name: 'First Fare',
-    reward: 500,
-    radius: 95,
-    needCar: true,
-    briefing: 'Carmen Sol: "Milo, first job. Jack a car — any car — and bring it to the Palmera Garage. Don\'t scratch it. Much."',
-    objective: 'Steal a car, then deliver it to the Palmera Garage',
-    target(G) { return G.world.garage; },
-    onStart() {},
+    name: 'First Errand',
+    text: 'Pick up the package at the marina. Keep it quiet.',
+    reward: 250,
   },
   {
-    name: 'Neon Pickup',
-    reward: 800,
-    radius: 75,
-    needCar: false,
-    briefing: 'Carmen Sol: "A package is waiting on the Neon Mile, under the pink sign. Grab it and don\'t get chatty."',
-    objective: 'Pick up the package on the Neon Mile',
-    target(G) { return G.world.packageSpot; },
-    onStart() {},
+    name: 'Three Drops',
+    text: 'Three drops across town: north park, east side, south beach. Hit them all.',
+    reward: 600,
   },
   {
-    name: 'Dockside Heat',
+    name: 'Hot Wheels',
+    text: 'Steal a car and bring it to the chop shop — the cops will notice.',
+    reward: 900,
+  },
+  {
+    name: 'Dockside Showdown',
+    text: 'The Marlin crew is at the docks. Drop all three, then report back to Carmen.',
     reward: 1500,
-    radius: 95,
-    needCar: false,
-    briefing: 'Carmen Sol: "The docks job went loud. SBPD is already rolling — get to the Coral Docks pier and lose them there."',
-    objective: 'Reach the Coral Docks pier while the police chase you',
-    target(G) { return G.world.docks; },
-    onStart(G) {
-      addWanted(G, 3, 'docks job went loud');
-      spawnPoliceCar(G);
-      spawnPoliceCar(G);
-    },
-  },
-  {
-    name: 'The Bay Job',
-    reward: 3000,
-    radius: 95,
-    needCar: false,
-    briefing: 'Carmen Sol: "Last one, Milo. The score is the safehouse in Vista Hills. Bring it home and we\'re legends of Solmar Bay."',
-    objective: 'Deliver the score to the Vista Hills safehouse',
-    target(G) { return G.world.safehouse; },
-    onStart() {},
   },
 ];
 
-export function currentMission(G) {
-  return G.missionIndex < MISSIONS.length ? MISSIONS[G.missionIndex] : null;
+function setMarker(state, spot, objective) {
+  state.missions.marker = { x: spot.x, y: spot.y };
+  state.missions.objective = objective;
 }
 
-export function startMission(G, index) {
-  G.missionIndex = index;
-  const m = currentMission(G);
-  if (!m) return;
-  G.mission = { def: m, target: m.target(G), done: false };
-  G.banner = { text: `${m.name} — ${m.objective}`, t: 0, life: 4.5 };
-  G.missionBrief = { text: m.briefing, t: 0, life: 6 };
-  m.onStart(G);
-  G.save();
-}
-
-export function updateMissions(G, dt) {
-  // Chain the next job after a short beat between missions.
-  if (G.nextMissionTimer > 0) {
-    G.nextMissionTimer -= dt;
-    if (G.nextMissionTimer <= 0) startMission(G, G.missionIndex + 1);
-    return;
+function completeMission(state, audio) {
+  const m = state.missions;
+  const def = MISSIONS[m.index];
+  state.player.cash += def.reward;
+  state.stats.missionsDone += 1;
+  addFloat(state, state.player.x, state.player.y - 40, `+$${def.reward}`, '#2ecc71');
+  m.toast = `${def.name} complete — +$${def.reward}`;
+  m.toastTimer = 4;
+  if (audio) audio.mission();
+  m.index += 1;
+  m.stage = 0;
+  if (m.index >= MISSIONS.length) {
+    m.complete = true;
+    m.objective = 'Story complete — Solmar Bay is yours. Free roam, Boss.';
+    showMessage(state, 'STORY COMPLETE — you run Solmar Bay now.');
+  } else {
+    startMission(state);
   }
-  const m = G.mission;
-  if (!m || m.done) return;
-  const p = G.player;
-  const dx = p.x - m.target.x;
-  const dy = p.y - m.target.y;
-  const d = Math.hypot(dx, dy);
-  if (d < m.def.radius) {
-    if (m.def.needCar && !p.inCar) {
-      G.banner = { text: 'You need to be in a car for this one.', t: 0, life: 2 };
-      return;
+}
+
+function startMission(state) {
+  const m = state.missions;
+  const def = MISSIONS[m.index];
+  const s = state.spots;
+  if (m.index === 0) {
+    setMarker(state, s.marina, def.text);
+  } else if (m.index === 1) {
+    m.stage = 0;
+    setMarker(state, s.dropA, `(1/3) ${def.text}`);
+  } else if (m.index === 2) {
+    setMarker(state, s.chopShop, def.text);
+  } else if (m.index === 3) {
+    setMarker(state, s.docks, def.text);
+    spawnRivals(state);
+  }
+  showMessage(state, `New job — ${def.name}: ${def.text}`, 5);
+}
+
+function spawnRivals(state) {
+  const d = state.spots.docks;
+  state.rivals = [
+    { x: d.x - 60, y: d.y - 40, angle: 0, health: 3, shootTimer: 1.2, color: '#8e44ad' },
+    { x: d.x + 40, y: d.y - 70, angle: 0, health: 3, shootTimer: 1.8, color: '#8e44ad' },
+    { x: d.x + 10, y: d.y + 50, angle: 0, health: 3, shootTimer: 2.4, color: '#8e44ad' },
+  ];
+  scarePeds(state, d.x, d.y, 500);
+}
+
+function near(state, spot, radius = 70) {
+  return dist2(state.player.x, state.player.y, spot.x, spot.y) < radius * radius;
+}
+
+export function missionName(state) {
+  if (state.missions.complete) return 'Free Roam';
+  return MISSIONS[state.missions.index].name;
+}
+
+export function updateMissions(state, dt, audio) {
+  const m = state.missions;
+  if (m.complete) return;
+  const s = state.spots;
+  if (m.index === 0) {
+    // Meet Carmen first, then the marina pickup opens.
+    if (m.stage === 0 && near(state, s.carmen, 80)) {
+      m.stage = 1;
+      setMarker(state, s.marina, 'Pick up the package at the marina.');
+      showMessage(state, 'Carmen: "Good. Package is at the marina. Go."', 4);
+      if (audio) audio.pickup();
+    } else if (m.stage === 1 && near(state, s.marina, 70)) {
+      completeMission(state, audio);
     }
-    m.done = true;
-    p.cash += m.def.reward;
-    p.ammo += 12;
-    G.audio.missionDone();
-    G.particles.push({ kind: 'boom', x: m.target.x, y: m.target.y, t: 0, life: 0.7 });
-    if (G.missionIndex + 1 >= MISSIONS.length) {
-      G.banner = { text: `THE BAY JOB DONE — $${m.def.reward}!`, t: 0, life: 4 };
-      G.state = 'win';
-      G.save();
-      return;
+  } else if (m.index === 1) {
+    const drops = [s.dropA, s.dropB, s.dropC];
+    const spot = drops[m.stage];
+    if (near(state, spot, 70)) {
+      state.player.cash += 0; // payout lands on completion, not per drop
+      m.stage += 1;
+      if (audio) audio.pickup();
+      if (m.stage >= 3) {
+        completeMission(state, audio);
+      } else {
+        setMarker(state, drops[m.stage], `Drop ${m.stage + 1}/3: next drop marked in gold.`);
+        showMessage(state, `Drop ${m.stage}/3 done. Next one is marked.`);
+      }
     }
-    G.banner = { text: `${m.def.name} complete! +$${m.def.reward}`, t: 0, life: 3.5 };
-    G.save();
-    G.nextMissionTimer = 2.2;
+  } else if (m.index === 2) {
+    // Steal any car (wanted jumps to 2), then deliver it to the chop shop.
+    if (m.stage === 0 && state.player.car && state.player.car.stolen) {
+      m.stage = 1;
+      setMarker(state, s.chopShop, 'Lose the heat and reach the chop shop.');
+      showMessage(state, 'Carmen: "Nice ride. Now bring it to the chop shop."', 4);
+    } else if (m.stage === 1 && state.player.car && near(state, s.chopShop, 90)) {
+      const car = state.player.car;
+      car.parked = true;
+      car.speed = 0;
+      state.player.car = null;
+      state.player.onFoot = true;
+      state.player.x = car.x + 40;
+      state.player.y = car.y;
+      state.cars = state.cars.filter((c) => c !== car);
+      completeMission(state, audio);
+    }
+  } else if (m.index === 3) {
+    if (m.stage === 0 && near(state, s.docks, 130)) {
+      m.stage = 1;
+      setMarker(state, s.docks, 'Drop all three Marlin crew.');
+      showMessage(state, 'The Marlin crew is here. End it.', 4);
+    } else if (m.stage === 1) {
+      const alive = state.rivals.filter((r) => r.health > 0).length;
+      if (alive === 0) {
+        m.stage = 2;
+        setMarker(state, s.carmen, 'Report back to Carmen.');
+        showMessage(state, 'All three down. Get back to Carmen.', 4);
+      }
+    } else if (m.stage === 2 && near(state, s.carmen, 80)) {
+      completeMission(state, audio);
+    }
   }
 }

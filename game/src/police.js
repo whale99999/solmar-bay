@@ -1,122 +1,91 @@
-// Solmar Bay — the Solmar Bay Police Department: wanted stars, response,
-// pursuit, ramming, and the bust. Wanted 1-5; more stars, more cruisers.
-import { CFG, angDiff, clamp, dist2 } from './config.js';
-import { makeCar } from './vehicles.js';
+// Solmar Bay — the police: cruisers spawn by wanted level, chase the player,
+// ram a getaway car, and bust the player on foot when they close in.
+import { WORLD_H, WORLD_W, angleDiff, angleTo, clamp, dist2 } from './config.js';
+import { WATER_X, addParticles, randomRoadPoint, showMessage } from './world.js';
+import { collideCars } from './vehicles.js';
 
-export function addWanted(G, stars, why) {
-  const before = G.wanted;
-  G.wanted = clamp(G.wanted + stars, 0, 5);
-  G.crimeTimer = 0; // fresh crime resets the cool-down clock
-  if (G.wanted > before) {
-    G.banner = { text: `WANTED — ${'★'.repeat(G.wanted)} (${why})`, t: 0, life: 2.5 };
-  }
+const COP_R = 20;
+const MAX_ACTIVE = 5;
+
+export function wantedToCops(wanted) {
+  return Math.min(MAX_ACTIVE, wanted + (wanted >= 4 ? 1 : 0));
 }
 
-// Spawn one cruiser on a road near the player, at a safe distance.
-export function spawnPoliceCar(G) {
-  const rng = G.rng;
-  const lines = G.world.lines;
-  const p = G.player;
-  for (let tries = 0; tries < 12; tries += 1) {
-    const road = lines[Math.floor(rng() * lines.length)];
-    const along = 200 + rng() * (CFG.WORLD - 400);
-    const vertical = rng() < 0.5;
-    const x = vertical ? road : along;
-    const y = vertical ? along : road;
-    const d = Math.hypot(x - p.x, y - p.y);
-    if (d < 500 || d > 1100) continue;
-    const car = makeCar(x, y, Math.atan2(p.y - y, p.x - x), '#20242e', true);
-    car.speed = 200;
-    car.ramCooldown = 0;
-    car.bustTimer = 0;
-    G.police.push(car);
-    return car;
-  }
-  return null;
-}
-
-export function updatePolice(G, dt) {
-  const p = G.player;
-  // Wanted decays: 15 s after the last crime, one star fades every 8 s
-  // while no cruiser is close.
-  G.crimeTimer += dt;
-  if (G.wanted > 0 && G.crimeTimer > 15) {
-    let near = false;
-    for (const cop of G.police) {
-      if (dist2(cop.x, cop.y, p.x, p.y) < 420 * 420) { near = true; break; }
-    }
-    if (!near) {
-      G.decayTimer += dt;
-      if (G.decayTimer > 8) {
-        G.decayTimer = 0;
-        G.wanted -= 1;
+export function spawnPolice(state) {
+  const want = wantedToCops(state.player.wanted);
+  while (state.police.filter((c) => !c.disabled).length < want) {
+    // Spawn on a road near the player but off-screen when possible.
+    let x = 0;
+    let y = 0;
+    for (let tries = 0; tries < 8; tries += 1) {
+      const p = randomRoadPoint(state.rng);
+      const d = dist2(p.x, p.y, state.player.x, state.player.y);
+      if (d > 500 * 500 && d < 1100 * 1100) {
+        x = p.x;
+        y = p.y;
+        break;
       }
-    } else {
-      G.decayTimer = 0;
+      x = p.x;
+      y = p.y;
     }
-  } else {
-    G.decayTimer = 0;
+    state.police.push({
+      id: 900 + state.police.length,
+      x, y, angle: 0, speed: 0, color: '#1c2733',
+      traffic: false, parked: false, w: 46, h: 22,
+      health: 100, disabled: false, siren: state.rng() * 10,
+    });
   }
-
-  // Keep cruisers on the road: wanted stars = cruisers on the street.
-  const want = G.wanted;
-  while (G.police.length < want) {
-    if (!spawnPoliceCar(G)) break;
+  // Despawn cruisers that fell far behind.
+  for (const cop of state.police) {
+    if (dist2(cop.x, cop.y, state.player.x, state.player.y) > 1600 * 1600) cop.disabled = true;
   }
-  while (G.police.length > want) G.police.pop();
-
-  for (const cop of G.police) {
-    if (cop.ramCooldown > 0) cop.ramCooldown -= dt;
-    // Steer toward the player, arcade-style, with a top speed above traffic.
-    const targetAngle = Math.atan2(p.y - cop.y, p.x - cop.x);
-    const diff = angDiff(cop.angle, targetAngle);
-    cop.angle += clamp(diff, -2.4 * dt, 2.4 * dt);
-    const targetSpeed = 250 + G.wanted * 18;
-    cop.speed += clamp(targetSpeed - cop.speed, -300 * dt, 260 * dt);
-    const nx = cop.x + Math.cos(cop.angle) * cop.speed * dt;
-    const ny = cop.y + Math.sin(cop.angle) * cop.speed * dt;
-    const probe = { x: nx, y: ny };
-    if (!G.world.resolveBuilding(probe, 20) && !G.world.inWater(nx, ny)) {
-      cop.x = nx;
-      cop.y = ny;
-    } else {
-      cop.speed *= 0.5;
-      cop.angle += 0.6 * dt;
-    }
-    cop.x = clamp(cop.x, 40, CFG.WORLD - 40);
-    cop.y = clamp(cop.y, 40, CFG.WORLD - 40);
-
-    const d = Math.hypot(p.x - cop.x, p.y - cop.y);
-    if (p.inCar) {
-      // Ram: shove the player's car and hurt the player.
-      if (d < 52 && cop.ramCooldown <= 0) {
-        cop.ramCooldown = 1.1;
-        p.health -= 6;
-        p.invuln = 0.4;
-        if (p.car) p.car.speed *= 0.55;
-        G.particles.push({ kind: 'spark', x: (p.x + cop.x) / 2, y: (p.y + cop.y) / 2, t: 0, life: 0.4 });
-        G.audio.punch();
-        if (p.health <= 0) G.wasted();
-      }
-      cop.bustTimer = 0;
-    } else if (d < 48) {
-      // On foot and caught: the bust meter fills, then it's over.
-      cop.bustTimer += dt;
-      if (cop.bustTimer > 1.2) G.busted();
-    } else {
-      cop.bustTimer = 0;
-    }
-  }
+  state.police = state.police.filter((c) => !c.disabled);
 }
 
-// A police cruiser shot to pieces: explosion, debris, and the heat rises.
-export function damagePoliceCar(G, cop) {
-  cop.health -= 1;
-  G.particles.push({ kind: 'spark', x: cop.x, y: cop.y, t: 0, life: 0.35 });
-  if (cop.health <= 0) {
-    G.particles.push({ kind: 'boom', x: cop.x, y: cop.y, t: 0, life: 0.8 });
-    G.audio.explosion();
-    G.police = G.police.filter((c) => c !== cop);
-    addWanted(G, 1, 'blew up a cruiser');
+export function updatePolice(state, dt, audio) {
+  const p = state.player;
+  if (p.wanted > 0) spawnPolice(state);
+  else {
+    // Heat off: the cruisers give up and drive away.
+    for (const cop of state.police) cop.disabled = true;
+    state.police = [];
+    return;
+  }
+  for (const cop of state.police) {
+    if (cop.disabled) continue;
+    const targetAngle = angleTo(cop.x, cop.y, p.x, p.y);
+    const diff = angleDiff(cop.angle, targetAngle);
+    const steer = clamp(diff * 2.2, -1, 1);
+    const d = Math.sqrt(dist2(cop.x, cop.y, p.x, p.y));
+    const topSpeed = 470 + p.wanted * 18;
+    // Ease off the gas when right on top of the player, so the ram lands.
+    const throttle = d > 90 ? 1 : 0.4;
+    cop.angle += steer * 2.6 * clamp(Math.abs(cop.speed) / 200, 0.15, 1) * dt * (cop.speed < 0 ? -1 : 1);
+    if (throttle > 0) cop.speed += 700 * dt;
+    else cop.speed *= Math.pow(0.4, dt);
+    cop.speed = clamp(cop.speed, 0, topSpeed);
+    cop.x += Math.cos(cop.angle) * cop.speed * dt;
+    cop.y += Math.sin(cop.angle) * cop.speed * dt;
+    cop.x = clamp(cop.x, WATER_X + 18, WORLD_W - 18);
+    cop.y = clamp(cop.y, 18, WORLD_H - 18);
+
+    // Ram: a cruiser touching the player's car shoves it and sparks.
+    if (p.car) collideCars(state, cop, p.car);
+    else if (d < 46 && p.onFoot && p.deadTimer <= 0) {
+      // On foot and cornered: the bust meter fills.
+      p.bustProgress += dt * 1.4;
+      if (p.bustProgress >= 2.2) {
+        p.bustProgress = 2.2;
+        if (audio) audio.busted();
+        showMessage(state, 'BUSTED by the Solmar Bay PD…');
+      }
+    } else if (p.onFoot) {
+      p.bustProgress = Math.max(0, p.bustProgress - dt * 2);
+    }
+    // Siren strobe particles.
+    cop.siren += dt;
+    if (Math.sin(cop.siren * 9) > 0.86) {
+      addParticles(state, cop.x, cop.y - 12, 1, Math.sin(cop.siren * 4.5) > 0 ? '#e74c3c' : '#3498db', 10, 0.25, 4);
+    }
   }
 }

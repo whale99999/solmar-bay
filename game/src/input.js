@@ -1,66 +1,100 @@
-// Solmar Bay — keyboard + mouse input. Held keys are read every frame;
-// one-shot presses (interact, punch, pause, mute, help, confirm) queue as flags.
-export const ACT_ENTER = 1;
-export const ACT_PUNCH = 2;
-export const ACT_PAUSE = 4;
-export const ACT_MUTE = 8;
-export const ACT_HELP = 16;
-export const ACT_CONFIRM = 32;
+// Solmar Bay — keyboard + mouse input. WASD/arrows to move and drive,
+// E to enter/exit a car, mouse aim + click (or Space) to shoot, Esc/P pause.
+export const ACTION_CONFIRM = 1;
+export const ACTION_PAUSE = 2;
+export const ACTION_ENTER_CAR = 4;
+export const ACTION_SHOOT = 8;
+
+const KEYMAP = {
+  KeyW: 'up', ArrowUp: 'up',
+  KeyS: 'down', ArrowDown: 'down',
+  KeyA: 'left', ArrowLeft: 'left',
+  KeyD: 'right', ArrowRight: 'right',
+  ShiftLeft: 'run', ShiftRight: 'run',
+};
 
 export function createInput(canvas) {
-  const keys = new Set();
+  const held = new Set();
+  const pressed = new Set();
+  let mouse = { x: 0, y: 0, down: false };
   let actions = 0;
-  const mouse = { x: 0, y: 0, down: false, clicked: false };
 
-  window.addEventListener('keydown', (event) => {
-    if (event.repeat) return;
-    keys.add(event.code);
-    if (event.code === 'KeyE') actions |= ACT_ENTER;
-    else if (event.code === 'KeyF') actions |= ACT_PUNCH;
-    else if (event.code === 'KeyP' || event.code === 'Escape') actions |= ACT_PAUSE;
-    else if (event.code === 'KeyM') actions |= ACT_MUTE;
-    else if (event.code === 'KeyH') actions |= ACT_HELP;
-    else if (event.code === 'Enter' || event.code === 'Space') actions |= ACT_CONFIRM;
-    if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Space'].includes(event.code)) {
-      event.preventDefault();
+  function onKeyDown(e) {
+    if (e.repeat) return;
+    const name = KEYMAP[e.code];
+    if (name) {
+      held.add(name);
+      e.preventDefault();
     }
-  });
-  window.addEventListener('keyup', (event) => keys.delete(event.code));
-  window.addEventListener('blur', () => keys.clear());
-
-  function trackPointer(event) {
-    const rect = canvas.getBoundingClientRect();
-    mouse.x = event.clientX - rect.left;
-    mouse.y = event.clientY - rect.top;
+    if (e.code === 'Enter' || e.code === 'Space') {
+      actions |= ACTION_CONFIRM;
+      if (e.code === 'Space') actions |= ACTION_SHOOT;
+      e.preventDefault();
+    }
+    if (e.code === 'Escape' || e.code === 'KeyP') actions |= ACTION_PAUSE;
+    if (e.code === 'KeyE') actions |= ACTION_ENTER_CAR;
   }
-  canvas.addEventListener('pointermove', trackPointer);
-  canvas.addEventListener('pointerdown', (event) => {
-    trackPointer(event);
+
+  function onKeyUp(e) {
+    const name = KEYMAP[e.code];
+    if (name) held.delete(name);
+  }
+
+  function onMouseMove(e) {
+    const r = canvas.getBoundingClientRect();
+    mouse = { x: e.clientX - r.left, y: e.clientY - r.top, down: mouse.down };
+  }
+
+  function onMouseDown(e) {
+    onMouseMove(e);
     mouse.down = true;
-    mouse.clicked = true;
-  });
-  window.addEventListener('pointerup', () => { mouse.down = false; });
+    actions |= ACTION_SHOOT;
+  }
+
+  function onMouseUp() {
+    mouse.down = false;
+  }
+
+  function onClick() {
+    actions |= ACTION_CONFIRM;
+  }
+
+  window.addEventListener('keydown', onKeyDown);
+  window.addEventListener('keyup', onKeyUp);
+  canvas.addEventListener('mousemove', onMouseMove);
+  canvas.addEventListener('mousedown', onMouseDown);
+  window.addEventListener('mouseup', onMouseUp);
+  canvas.addEventListener('click', onClick);
+  canvas.addEventListener('contextmenu', (e) => e.preventDefault());
 
   return {
-    keys,
-    mouse,
-    down(code) { return keys.has(code); },
-    axis() {
-      const x = (keys.has('KeyD') || keys.has('ArrowRight') ? 1 : 0)
-        - (keys.has('KeyA') || keys.has('ArrowLeft') ? 1 : 0);
-      const y = (keys.has('KeyS') || keys.has('ArrowDown') ? 1 : 0)
-        - (keys.has('KeyW') || keys.has('ArrowUp') ? 1 : 0);
-      return { x, y };
+    held,
+    get mouse() {
+      return mouse;
+    },
+    // -1/0/1 steering and throttle intents, read fresh every frame.
+    steer() {
+      return (held.has('left') ? -1 : 0) + (held.has('right') ? 1 : 0);
+    },
+    throttle() {
+      return (held.has('up') ? 1 : 0) + (held.has('down') ? -1 : 0);
+    },
+    moveX() {
+      return (held.has('right') ? 1 : 0) - (held.has('left') ? 1 : 0);
+    },
+    moveY() {
+      return (held.has('down') ? 1 : 0) - (held.has('up') ? 1 : 0);
+    },
+    running() {
+      return held.has('run');
+    },
+    shooting() {
+      return mouse.down || held.has('shoot');
     },
     takeActions() {
-      const taken = actions;
+      const out = actions;
       actions = 0;
-      return taken;
-    },
-    takeClick() {
-      const c = mouse.clicked;
-      mouse.clicked = false;
-      return c;
+      return out;
     },
   };
 }
