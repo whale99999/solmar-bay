@@ -1,91 +1,73 @@
-// Solmar Bay — the police: cruisers spawn by wanted level, chase the player,
-// ram a getaway car, and bust the player on foot when they close in.
-import { WORLD_H, WORLD_W, angleDiff, angleTo, clamp, dist2 } from './config.js';
-import { WATER_X, addParticles, randomRoadPoint, showMessage } from './world.js';
-import { collideCars } from './vehicles.js';
+// Solmar Bay — final pass, round 4
+// Solmar Bay — the Solmar Bay Police Department. Wanted level 1–5 decides
+// how many cruisers hunt the player; cruisers ram the player's car, and on
+// foot they close in and try to bust the player. Heat cools when the player
+// stays out of trouble, and cruisers give up when the player escapes far.
+import { MAX_POLICE, STEP, WORLD_SIZE } from './config.js';
+import { spawnParticles } from './world.js';
 
-const COP_R = 20;
-const MAX_ACTIVE = 5;
-
-export function wantedToCops(wanted) {
-  return Math.min(MAX_ACTIVE, wanted + (wanted >= 4 ? 1 : 0));
-}
-
-export function spawnPolice(state) {
-  const want = wantedToCops(state.player.wanted);
-  while (state.police.filter((c) => !c.disabled).length < want) {
-    // Spawn on a road near the player but off-screen when possible.
-    let x = 0;
-    let y = 0;
-    for (let tries = 0; tries < 8; tries += 1) {
-      const p = randomRoadPoint(state.rng);
-      const d = dist2(p.x, p.y, state.player.x, state.player.y);
-      if (d > 500 * 500 && d < 1100 * 1100) {
-        x = p.x;
-        y = p.y;
-        break;
-      }
-      x = p.x;
-      y = p.y;
-    }
+export function stepPolice(state, audio) {
+  const p = state.player;
+  const wantedCount = Math.min(MAX_POLICE, state.wanted + 1);
+  // Spawn cruisers up to the wanted count, at road points near the player.
+  while (state.police.length < wantedCount && state.wanted > 0) {
+    const angle = Math.random() * Math.PI * 2;
+    const dist = 500 + Math.random() * 300;
     state.police.push({
-      id: 900 + state.police.length,
-      x, y, angle: 0, speed: 0, color: '#1c2733',
-      traffic: false, parked: false, w: 46, h: 22,
-      health: 100, disabled: false, siren: state.rng() * 10,
+      x: Math.max(60, Math.min(WORLD_SIZE - 60, p.x + Math.cos(angle) * dist)),
+      y: Math.max(60, Math.min(WORLD_SIZE - 60, p.y + Math.sin(angle) * dist)),
+      angle: 0, speed: 0, color: '#1c2733', kind: 'police', siren: Math.random() * 10,
     });
   }
-  // Despawn cruisers that fell far behind.
-  for (const cop of state.police) {
-    if (dist2(cop.x, cop.y, state.player.x, state.player.y) > 1600 * 1600) cop.disabled = true;
-  }
-  state.police = state.police.filter((c) => !c.disabled);
-}
-
-export function updatePolice(state, dt, audio) {
-  const p = state.player;
-  if (p.wanted > 0) spawnPolice(state);
-  else {
-    // Heat off: the cruisers give up and drive away.
-    for (const cop of state.police) cop.disabled = true;
-    state.police = [];
+  // Despawn when the heat is gone.
+  if (state.wanted === 0) {
+    state.police.length = 0;
     return;
   }
   for (const cop of state.police) {
-    if (cop.disabled) continue;
-    const targetAngle = angleTo(cop.x, cop.y, p.x, p.y);
-    const diff = angleDiff(cop.angle, targetAngle);
-    const steer = clamp(diff * 2.2, -1, 1);
-    const d = Math.sqrt(dist2(cop.x, cop.y, p.x, p.y));
-    const topSpeed = 470 + p.wanted * 18;
-    // Ease off the gas when right on top of the player, so the ram lands.
-    const throttle = d > 90 ? 1 : 0.4;
-    cop.angle += steer * 2.6 * clamp(Math.abs(cop.speed) / 200, 0.15, 1) * dt * (cop.speed < 0 ? -1 : 1);
-    if (throttle > 0) cop.speed += 700 * dt;
-    else cop.speed *= Math.pow(0.4, dt);
-    cop.speed = clamp(cop.speed, 0, topSpeed);
-    cop.x += Math.cos(cop.angle) * cop.speed * dt;
-    cop.y += Math.sin(cop.angle) * cop.speed * dt;
-    cop.x = clamp(cop.x, WATER_X + 18, WORLD_W - 18);
-    cop.y = clamp(cop.y, 18, WORLD_H - 18);
-
-    // Ram: a cruiser touching the player's car shoves it and sparks.
-    if (p.car) collideCars(state, cop, p.car);
-    else if (d < 46 && p.onFoot && p.deadTimer <= 0) {
-      // On foot and cornered: the bust meter fills.
-      p.bustProgress += dt * 1.4;
-      if (p.bustProgress >= 2.2) {
-        p.bustProgress = 2.2;
-        if (audio) audio.busted();
-        showMessage(state, 'BUSTED by the Solmar Bay PD…');
-      }
-    } else if (p.onFoot) {
-      p.bustProgress = Math.max(0, p.bustProgress - dt * 2);
+    const dx = p.x - cop.x;
+    const dy = p.y - cop.y;
+    const dist = Math.hypot(dx, dy);
+    const wantAngle = Math.atan2(dy, dx);
+    let diff = wantAngle - cop.angle;
+    while (diff > Math.PI) diff -= Math.PI * 2;
+    while (diff < -Math.PI) diff += Math.PI * 2;
+    cop.angle += Math.max(-2.4 * STEP, Math.min(2.4 * STEP, diff));
+    const targetSpeed = dist > 700 ? 520 : 380 + state.wanted * 30;
+    cop.speed += (targetSpeed - cop.speed) * STEP * 1.2;
+    cop.x += Math.cos(cop.angle) * cop.speed * STEP;
+    cop.y += Math.sin(cop.angle) * cop.speed * STEP;
+    cop.siren += STEP;
+    // Ram the player's car.
+    if (!p.onFoot && p.car && dist < 52) {
+      p.car.speed *= 0.75;
+      cop.speed *= 0.7;
+      spawnParticles(state, cop.x, cop.y, '#ffcc33', 8);
+      if (audio) audio.crash();
     }
-    // Siren strobe particles.
-    cop.siren += dt;
-    if (Math.sin(cop.siren * 9) > 0.86) {
-      addParticles(state, cop.x, cop.y - 12, 1, Math.sin(cop.siren * 4.5) > 0 ? '#e74c3c' : '#3498db', 10, 0.25, 4);
+    // On foot, a cruiser that catches the player busts them.
+    if (p.onFoot && dist < 34 && p.alive) {
+      p.health -= 25 * STEP * 4;
+      if (p.health <= 0) {
+        p.health = 0;
+        p.alive = false;
+      }
     }
   }
+  // Escaped far enough: the tail cools off.
+  if (state.police.length > 0) {
+    const nearest = Math.min(...state.police.map((c) => Math.hypot(c.x - p.x, c.y - p.y)));
+    if (nearest > 1100) state.heat = Math.max(0, state.heat - STEP * 0.5);
+  }
+}
+
+export function decayHeat(state) {
+  if (state.wanted === 0) return;
+  // Heat only cools while the player is not actively committing crimes;
+  // the main loop calls this every step with a small rate.
+  state.heat = Math.max(0, state.heat - 0.06 * STEP);
+  const bands = [0, 1, 2.5, 4.5, 7, 10];
+  let level = 0;
+  for (let i = 0; i < bands.length; i += 1) if (state.heat >= bands[i]) level = i;
+  state.wanted = level;
 }

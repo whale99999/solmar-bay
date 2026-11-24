@@ -1,7 +1,7 @@
-// Solmar Bay — a tiny static server for game/ (Node 22, stdlib only).
-// `node serve.ts` serves game/ on http://localhost:8080 (or --port N).
-// It sends the MIME types a browser game needs and refuses any path outside
-// game/. A development convenience, not a web server for the internet.
+// Solmar Bay — final pass, round 4
+// Solmar Bay — a tiny static server for game/ (Node 22, standard library
+// only), a development convenience so the game can be played locally with no
+// build step: `node serve.ts` serves game/ on http://localhost:8080.
 import { createReadStream, statSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { extname, join, normalize, resolve, sep } from 'node:path';
@@ -26,6 +26,7 @@ const MIME = {
   '.webp': 'image/webp',
   '.svg': 'image/svg+xml',
   '.ico': 'image/x-icon',
+  '.woff2': 'font/woff2',
   '.wav': 'audio/wav',
   '.mp3': 'audio/mpeg',
   '.ogg': 'audio/ogg',
@@ -63,5 +64,5 @@ createServer((request, response) => {
   });
   createReadStream(file).pipe(response);
 }).listen(port, '127.0.0.1', () => {
-  console.log(`Solmar Bay is on http://localhost:${port}`);
+  console.log(`game/ is on http://localhost:${port}`);
 });

@@ -1,8 +1,11 @@
-// Solmar Bay — the entrypoint for make.fun gta6-01 (Node 22, stdlib only).
-// Hands the game in: copies game/ and screenshots/ from beside this file to
-// /output (or MAKEFUN_OUTPUT_DIR outside the grader) and writes
-// /output/dossier.json with the vendored make.fun library, applying the
-// scorer's own caps so an entry the scorer would refuse is refused here.
+// Solmar Bay — final pass, round 4
+// Solmar Bay — entrypoint (Node 22, standard library only). The game is the
+// plain static files in game/ beside this file, and this program hands them
+// in: it copies game/ and screenshots/ to /output (or MAKEFUN_OUTPUT_DIR
+// outside the grader) and writes /output/dossier.json with the vendored
+// make.fun library, exactly as the kit's starter does.
+//
+//   mkdir -p out && MAKEFUN_OUTPUT_DIR=out node main.ts
 import { cpSync, existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -14,9 +17,7 @@ const out = process.env.MAKEFUN_OUTPUT_DIR ?? '/output';
 mkdirSync(out, { recursive: true });
 cpSync(join(here, 'game'), join(out, 'game'), { recursive: true });
 mkdirSync(join(out, 'screenshots'), { recursive: true });
-if (existsSync(join(here, 'screenshots'))) {
-  cpSync(join(here, 'screenshots'), join(out, 'screenshots'), { recursive: true });
-}
+if (existsSync(join(here, 'screenshots'))) cpSync(join(here, 'screenshots'), join(out, 'screenshots'), { recursive: true });
 
 writeFileSync(
   join(out, 'dossier.json'),
@@ -28,4 +29,3 @@ writeFileSync(
     game_path_max_bytes: 1000,
   }),
 );
-console.log(`Solmar Bay handed in: ${out}/dossier.json`);

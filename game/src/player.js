@@ -1,179 +1,93 @@
-// Solmar Bay — the player on foot and in a car: movement, entering and
-// stealing cars, health, wanted level and being busted or wasted.
-import { STEP, WORLD_H, WORLD_W, clamp, dist2 } from './config.js';
-import { WATER_X, addFloat, addParticles, collideBuildings, showMessage } from './world.js';
+// Solmar Bay — final pass, round 4
+// Solmar Bay — the player on foot: WASD walking and running, mouse-aimed
+// shooting direction, and getting in and out of cars (E). Stealing a parked
+// car, or one with a driver, raises heat; the driver's door is always open.
+import { CAR, PLAYER, STEP, WANTED } from './config.js';
+import { addHeat, circleHitsBuilding, setMessage } from './world.js';
 
-const WALK_SPEED = 175;
-const RUN_SPEED = 250;
-const PLAYER_R = 13;
-
-export function nearestCar(state, maxDist = 70) {
-  let best = null;
-  let bestD = maxDist * maxDist;
-  for (const car of state.cars) {
-    if (car.traffic) continue; // moving traffic cannot be boarded
-    const d = dist2(state.player.x, state.player.y, car.x, car.y);
-    if (d < bestD) {
-      bestD = d;
-      best = car;
-    }
+export function stepPlayer(state, input, audio) {
+  const p = state.player;
+  if (!p.alive || !p.onFoot) return;
+  const dirX = input.direction();
+  const dirY = input.throttle();
+  const speed = input.running() ? PLAYER.runSpeed : PLAYER.walkSpeed;
+  let dx = dirX;
+  let dy = -dirY;
+  const len = Math.hypot(dx, dy);
+  if (len > 0) {
+    dx /= len;
+    dy /= len;
+    p.angle = Math.atan2(dy, dx);
+    const nx = p.x + dx * speed * STEP;
+    const ny = p.y + dy * speed * STEP;
+    if (!circleHitsBuilding(state, nx, p.y, PLAYER.radius)) p.x = nx;
+    if (!circleHitsBuilding(state, p.x, ny, PLAYER.radius)) p.y = ny;
+    p.x = Math.max(20, Math.min(3180, p.x));
+    p.y = Math.max(20, Math.min(3180, p.y));
   }
-  return best;
+  p.speed = len > 0 ? speed : 0;
 }
 
-export function enterCar(state, car, audio) {
+export function tryEnterCar(state, audio) {
   const p = state.player;
-  p.car = car;
-  p.onFoot = false;
-  p.x = car.x;
-  p.y = car.y;
-  p.angle = car.angle;
-  car.parked = false;
-  car.traffic = false;
-  if (car.stolen !== true) {
-    car.stolen = true;
-    state.stats.carsStolen += 1;
-    addWanted(state, 2, 'Car stolen — the cops are coming');
-    addFloat(state, car.x, car.y - 30, 'STOLEN!', '#f1c40f');
+  if (!p.onFoot || !p.alive) return;
+  let best = null;
+  let bestD = 70;
+  for (const car of state.cars) {
+    if (car.kind === 'police') continue;
+    const d = Math.hypot(car.x - p.x, car.y - p.y);
+    if (d < bestD) { best = car; bestD = d; }
   }
+  if (!best) {
+    setMessage(state, 'No car close by. Find one parked at the kerb.', 2.5);
+    return;
+  }
+  p.onFoot = false;
+  p.car = best;
+  best.driver = 'player';
+  if (best.kind === 'traffic') {
+    best.kind = 'player';
+    addHeat(state, WANTED.stealCar);
+    setMessage(state, 'Car stolen! The owner is calling it in…', 3);
+    state.stats.carsStolen += 1;
+  } else if (!best.stolen) {
+    best.stolen = true;
+    best.kind = 'player';
+    addHeat(state, WANTED.stealCar);
+    setMessage(state, 'You took the car. Keep it moving.', 3);
+    state.stats.carsStolen += 1;
+  } else {
+    best.kind = 'player';
+  }
+  p.x = best.x;
+  p.y = best.y;
+  p.angle = best.angle;
   if (audio) audio.pickup();
 }
 
 export function exitCar(state) {
   const p = state.player;
+  if (p.onFoot || !p.car) return;
   const car = p.car;
-  if (!car) return;
-  // Step out to the driver's side, clear of buildings.
-  const side = p.angle + Math.PI / 2;
-  p.x = car.x + Math.cos(side) * 34;
-  p.y = car.y + Math.sin(side) * 34;
-  p.x = clamp(p.x, WATER_X + 20, WORLD_W - 10);
-  p.y = clamp(p.y, 10, WORLD_H - 10);
-  collideBuildings(state, p, PLAYER_R);
-  p.onFoot = true;
-  p.speed = 0;
-  p.car = null;
-  car.parked = true;
   car.speed = 0;
+  car.driver = null;
+  car.kind = car.stolen ? 'player' : 'parked';
+  p.onFoot = true;
+  p.car = null;
+  p.x = car.x + Math.cos(car.angle + Math.PI / 2) * 34;
+  p.y = car.y + Math.sin(car.angle + Math.PI / 2) * 34;
+  p.angle = car.angle;
 }
 
-export function addWanted(state, stars, reason) {
+export function hurtPlayer(state, amount, audio) {
   const p = state.player;
-  if (p.crimeCooldown > 0) return;
-  p.wanted = clamp(p.wanted + stars, 0, 5);
-  p.crimeCooldown = 1.2;
-  p.wantedTimer = 0;
-  if (reason) showMessage(state, reason);
-}
-
-export function damagePlayer(state, amount, audio) {
-  const p = state.player;
-  if (p.deadTimer > 0 || p.bustProgress > 0) return;
+  if (state.time < p.invulnerableUntil) return;
   p.health -= amount;
+  p.invulnerableUntil = state.time + 0.5;
+  if (audio) audio.hit();
   if (p.health <= 0) {
     p.health = 0;
-    p.deadTimer = 2.2;
-    addParticles(state, p.x, p.y, 26, '#c0392b', 160, 0.9, 4);
-    if (audio) audio.busted();
-    showMessage(state, 'WASTED — waking up at the hospital…');
-  }
-}
-
-function respawn(state, place) {
-  const p = state.player;
-  const spot = state.spots[place];
-  if (p.car) {
-    p.car.parked = true;
-    p.car.speed = 0;
-    p.car = null;
-  }
-  p.onFoot = true;
-  p.x = spot.x;
-  p.y = spot.y;
-  p.angle = -Math.PI / 2;
-  p.health = 100;
-  p.wanted = 0;
-  p.bustProgress = 0;
-  p.deadTimer = 0;
-  p.speed = 0;
-  for (const cop of state.police) cop.disabled = true;
-  state.police = state.police.filter((c) => !c.disabled);
-  state.bullets.length = 0;
-}
-
-export function updatePlayer(state, dt, input, audio) {
-  const p = state.player;
-  p.crimeCooldown = Math.max(0, p.crimeCooldown - dt);
-  if (p.deadTimer > 0) {
-    p.deadTimer -= dt;
-    if (p.deadTimer <= 0) {
-      const lost = Math.floor(p.cash * 0.1);
-      p.cash -= lost;
-      state.stats.arrests += 1;
-      respawn(state, 'hospital');
-      showMessage(state, `Hospital bill: -$${lost}. Stay out of trouble.`);
-    }
-    return;
-  }
-  if (p.bustProgress > 0) {
-    // Being busted: frozen while the cuffs go on, then respawn at the plaza.
-    p.bustProgress -= dt;
-    if (p.bustProgress <= 0) {
-      const lost = Math.floor(p.cash * 0.1);
-      p.cash -= lost;
-      state.stats.arrests += 1;
-      respawn(state, 'carmen');
-      showMessage(state, `BUSTED — fined $${lost}. Carmen is not impressed.`);
-    }
-    return;
-  }
-
-  // Wanted decay: lay low and the heat cools off, one star at a time.
-  if (p.wanted > 0) {
-    const copNear = state.police.some((c) => dist2(p.x, p.y, c.x, c.y) < 500 * 500);
-    if (!copNear) {
-      p.wantedTimer += dt;
-      if (p.wantedTimer > 12) {
-        p.wanted -= 1;
-        p.wantedTimer = 0;
-        if (p.wanted === 0) showMessage(state, 'You lost the cops. Heat is off.');
-      }
-    } else {
-      p.wantedTimer = 0;
-    }
-  }
-
-  // Slow health regen while the heat is off.
-  if (p.wanted === 0 && p.health < 100) {
-    p.regenTimer += dt;
-    if (p.regenTimer > 1) {
-      p.health = Math.min(100, p.health + 2);
-      p.regenTimer = 0;
-    }
-  }
-
-  if (p.onFoot) {
-    const mx = input.moveX();
-    const my = input.moveY();
-    const speed = input.running() ? RUN_SPEED : WALK_SPEED;
-    if (mx !== 0 || my !== 0) {
-      const len = Math.hypot(mx, my);
-      p.x += (mx / len) * speed * dt;
-      p.y += (my / len) * speed * dt;
-      p.angle = Math.atan2(my, mx);
-      p.speed = speed;
-    } else {
-      p.speed = 0;
-    }
-    p.x = clamp(p.x, WATER_X + 16, WORLD_W - 10);
-    p.y = clamp(p.y, 10, WORLD_H - 10);
-    collideBuildings(state, p, PLAYER_R);
-  }
-  // Driving is handled by vehicles.updatePlayerCar; the player rides the car.
-  if (p.car) {
-    p.x = p.car.x;
-    p.y = p.car.y;
-    p.angle = p.car.angle;
-    p.speed = p.car.speed;
+    p.alive = false;
+    setMessage(state, 'You are down. Carmen Sol is not happy.', 5);
   }
 }

@@ -1,25 +1,25 @@
-// Solmar Bay — boot and the one loop: input is read every frame, the world
+// Solmar Bay — final pass, round 4
+// Solmar Bay — boot and the one loop. Input is read every frame, the world
 // advances in fixed 1/60 s steps, and the renderer paints what is there.
-// Screens: title, play, paused. ?seed=N fixes the city; ?shot=start|drive|
-// mission|chase (with &seed=N) stages that scene instead of running the loop,
-// paints it twice and sets window.__shotReady for a screenshot.
+// Screens: title, play, paused, game over. ?seed=N fixes the city layout;
+// ?shot=start|drive|mission|chase (with &seed=N) stages that scene instead
+// of running the loop, paints it twice and sets window.__shotReady.
 import { BEST_KEY, SAVE_KEY, STEP } from './config.js';
-import { createState, updateEffects } from './world.js';
-import { createRenderer, SCREEN_PAUSED, SCREEN_PLAY, SCREEN_TITLE } from './render.js';
-import {
-  ACTION_CONFIRM, ACTION_ENTER_CAR, ACTION_PAUSE, ACTION_SHOOT, createInput,
-} from './input.js';
+import { createState, setMessage } from './world.js';
+import { createRandom } from './random.js';
+import { ACTION_CONFIRM, ACTION_ENTER, ACTION_MUTE, ACTION_PAUSE, ACTION_SAVE, createInput } from './input.js';
+import { createRenderer } from './render.js';
+import { SCREEN_OVER, SCREEN_PAUSED, SCREEN_PLAY, SCREEN_TITLE, SCREEN_WIN } from './hud.js';
 import { createAudio } from './audio.js';
-import { enterCar, exitCar, nearestCar, updatePlayer } from './player.js';
-import { updateVehicles } from './vehicles.js';
-import { updatePedestrians } from './pedestrians.js';
-import { updatePolice } from './police.js';
-import { playerShoot, updateCombat } from './combat.js';
-import { updateMissions } from './missions.js';
+import { stepPlayer, tryEnterCar, exitCar } from './player.js';
+import { stepPlayerCar, stepTraffic, resolveCarCollisions } from './vehicles.js';
+import { stepPedestrians, checkPedCarHits } from './pedestrians.js';
+import { stepPolice, decayHeat } from './police.js';
+import { stepMissions, startMission } from './missions.js';
+import { stepCombat } from './combat.js';
 import { stageShot } from './shots.js';
 
 const MAX_FRAME = 0.25;
-const SAVE_EVERY = 10;
 
 const params = new URLSearchParams(window.location.search);
 const shot = params.get('shot');
@@ -28,6 +28,7 @@ const seed = Number.isInteger(seedParam) ? seedParam : Math.floor(Math.random() 
 
 const canvas = document.getElementById('game');
 const status = document.getElementById('status');
+const state = createState(seed);
 const renderer = createRenderer(canvas);
 const audio = createAudio();
 
@@ -40,54 +41,35 @@ function readSave() {
   }
 }
 
-function writeSave(state) {
+function writeSave() {
   try {
     window.localStorage.setItem(SAVE_KEY, JSON.stringify({
-      cash: state.player.cash,
-      missionIndex: state.missions.index,
-      missionStage: state.missions.stage,
-      x: state.player.x,
-      y: state.player.y,
-      health: state.player.health,
+      cash: state.player.cash, missionIndex: state.missionIndex,
+      missionDone: state.missionDone, carsStolen: state.stats.carsStolen,
+      x: state.player.x, y: state.player.y, savedAt: Date.now(),
     }));
+    state.savedAt = Date.now();
+    setMessage(state, 'Game saved. Progress is safe.', 3);
   } catch {
-    // Storage can be off (private windows): progress then lasts this visit only.
+    setMessage(state, 'Save failed — storage is off in this browser.', 3);
   }
 }
 
-function readBest() {
-  try {
-    return Number.parseInt(window.localStorage.getItem(BEST_KEY) ?? '0', 10) || 0;
-  } catch {
-    return 0;
-  }
-}
-
-function saveBest(value) {
-  try {
-    window.localStorage.setItem(BEST_KEY, String(value));
-  } catch {
-    // Storage can be off: best then lasts this visit only.
-  }
-}
-
-function applySave(state, save) {
+function applySave(save) {
   if (!save) return;
-  state.player.cash = save.cash ?? 120;
-  state.player.health = save.health ?? 100;
+  state.player.cash = save.cash ?? 250;
+  state.missionIndex = save.missionIndex ?? 0;
+  state.missionDone = save.missionDone ?? 0;
+  state.stats.carsStolen = save.carsStolen ?? 0;
   state.player.x = save.x ?? state.player.x;
   state.player.y = save.y ?? state.player.y;
-  // Mission progress restores at the current job's start (objectives re-point).
-  state.missions.index = Math.min(save.missionIndex ?? 0, 3);
-  state.missions.stage = 0;
 }
 
 function runShot(name) {
-  const { state, screen } = stageShot(name, seed);
-  state.aim = false;
+  const scene = stageShot(name, state);
   let painted = 0;
   function paint() {
-    renderer.draw(state, screen, 0);
+    renderer.draw(state, scene.screen);
     painted += 1;
     if (painted < 2) requestAnimationFrame(paint);
     else window.__shotReady = true;
@@ -97,105 +79,79 @@ function runShot(name) {
 
 function runGame() {
   const input = createInput(canvas);
-  let state = createState(seed);
-  const saved = readSave();
-  let best = readBest();
   let screen = SCREEN_TITLE;
   let accumulator = 0;
   let last = performance.now();
-  let saveCountdown = SAVE_EVERY;
-  state.audio = audio;
+  const saved = readSave();
+  if (saved) applySave(saved);
 
   function announce(message) {
     status.textContent = message;
   }
 
   function startGame() {
-    state = createState(seed);
-    state.audio = audio;
-    if (saved) applySave(state, saved);
-    accumulator = 0;
-    saveCountdown = SAVE_EVERY;
+    state.player.alive = true;
+    state.player.health = 100;
+    state.mission = null;
+    startMission(state, state.missionIndex);
     screen = SCREEN_PLAY;
+    audio.unlock();
+    audio.startMusic();
     announce('Playing Solmar Bay. Follow the gold marker.');
+  }
+
+  function endGame(win) {
+    screen = win ? SCREEN_WIN : SCREEN_OVER;
+    try {
+      const best = Number.parseInt(window.localStorage.getItem(BEST_KEY) ?? '0', 10) || 0;
+      if (state.player.cash > best) window.localStorage.setItem(BEST_KEY, String(state.player.cash));
+    } catch {
+      // Storage off: the best cash lasts this visit only.
+    }
+    announce(win ? 'Story complete.' : 'Busted. Press Space to play again.');
+  }
+
+  function stepWorld() {
+    state.time += STEP;
+    stepPlayer(state, input, audio);
+    stepPlayerCar(state, input, audio);
+    stepTraffic(state);
+    resolveCarCollisions(state, audio);
+    stepPedestrians(state);
+    checkPedCarHits(state, audio);
+    stepPolice(state, audio);
+    decayHeat(state);
+    stepMissions(state, audio);
+    stepCombat(state, input, audio, renderer.camera);
+    if (state.missionIndex >= 4 && state.mission === null) endGame(true);
+    if (!state.player.alive) endGame(false);
+    const driving = !state.player.onFoot && state.player.car;
+    audio.setEngine(driving ? Math.abs(state.player.car.speed) / 560 : 0, !!driving);
+    audio.setSiren(state.wanted > 0, state.time);
   }
 
   function handleActions() {
     const actions = input.takeActions();
-    if (actions & ACTION_CONFIRM) audio.unlock();
-    if (actions & ACTION_CONFIRM && screen === SCREEN_TITLE) startGame();
-    else if (actions & ACTION_PAUSE && screen === SCREEN_PLAY) {
+    if (actions & ACTION_MUTE) {
+      state.muted = audio.toggleMute();
+      setMessage(state, state.muted ? 'Muted.' : 'Sound on.', 2);
+    }
+    if (actions & ACTION_CONFIRM && (screen === SCREEN_TITLE || screen === SCREEN_OVER || screen === SCREEN_WIN)) {
+      audio.unlock();
+      startGame();
+    } else if (actions & ACTION_PAUSE && screen === SCREEN_PLAY) {
       screen = SCREEN_PAUSED;
       announce('Paused.');
     } else if (actions & (ACTION_PAUSE | ACTION_CONFIRM) && screen === SCREEN_PAUSED) {
       screen = SCREEN_PLAY;
       announce('Playing.');
     }
-    if (screen !== SCREEN_PLAY) return;
-    if (actions & ACTION_ENTER_CAR) {
-      audio.unlock();
-      const p = state.player;
-      if (p.onFoot) {
-        const car = nearestCar(state);
-        if (car) enterCar(state, car, audio);
-        else audio.denied();
-      } else {
-        exitCar(state);
-      }
+    if (actions & ACTION_SAVE && screen === SCREEN_PLAY) writeSave();
+    if (actions & ACTION_ENTER && screen === SCREEN_PLAY) {
+      if (state.player.onFoot) tryEnterCar(state, audio);
+      else exitCar(state);
     }
-    if (actions & ACTION_SHOOT) {
-      audio.unlock();
-      if (state.player.onFoot) {
-        const m = input.mouse;
-        const world = screenToWorld(m.x, m.y);
-        playerShoot(state, world.x, world.y, audio);
-      }
-    }
-  }
-
-  function screenToWorld(sx, sy) {
-    const p = state.player;
-    const w = renderer.width;
-    const h = renderer.height;
-    const camX = Math.max(-40, Math.min(3200 - w + 40, p.x - w / 2));
-    const camY = Math.max(-40, Math.min(2400 - h + 40, p.y - h / 2));
-    return { x: sx + camX, y: sy + camY };
-  }
-
-  function step() {
-    if (screen === SCREEN_TITLE) {
-      state.time += STEP;
-      updatePedestrians(state, STEP);
-      updateVehicles(state, STEP, input);
-      updateEffects(state, STEP);
-      return;
-    }
-    state.time += STEP;
-    // Aim: where the mouse points in the world, for the aim line + shooting.
-    const m = input.mouse;
-    const world = screenToWorld(m.x, m.y);
-    state.aim = state.player.onFoot;
-    if (state.player.onFoot && (input.shooting() || m.down)) {
-      playerShoot(state, world.x, world.y, audio);
-    }
-    updatePlayer(state, STEP, input, audio);
-    updateVehicles(state, STEP, input);
-    updatePedestrians(state, STEP);
-    updatePolice(state, STEP, audio);
-    updateCombat(state, STEP, audio);
-    updateMissions(state, STEP, audio);
-    updateEffects(state, STEP);
-    audio.update(STEP, !!state.player.car, state.player.car ? state.player.car.speed : 0, state.player.wanted);
-    // Autosave while playing, and keep the best haul.
-    saveCountdown -= STEP;
-    if (saveCountdown <= 0) {
-      saveCountdown = SAVE_EVERY;
-      writeSave(state);
-      if (state.player.cash > best) {
-        best = state.player.cash;
-        saveBest(best);
-      }
-    }
+    if (input.takePressed('shoot')) audio.unlock();
   }
 
   function frame(now) {
@@ -205,24 +161,26 @@ function runGame() {
     handleActions();
     if (screen === SCREEN_TITLE || screen === SCREEN_PLAY) {
       while (accumulator >= STEP && (screen === SCREEN_TITLE || screen === SCREEN_PLAY)) {
-        step();
+        if (screen === SCREEN_PLAY) stepWorld();
+        else state.time += STEP;
         accumulator -= STEP;
       }
     } else {
       accumulator = 0;
     }
-    renderer.draw(state, screen, best);
+    renderer.draw(state, screen);
+    input.endFrame();
   }
 
   document.addEventListener('visibilitychange', () => {
     if (document.hidden && screen === SCREEN_PLAY) {
       screen = SCREEN_PAUSED;
-      writeSave(state);
       announce('Paused.');
     }
   });
+  canvas.addEventListener('mousedown', () => audio.unlock());
 
-  announce('Solmar Bay. Press Enter or click to start.');
+  announce('Solmar Bay. Press Space or click to start.');
   requestAnimationFrame(frame);
 }
 
